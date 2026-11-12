@@ -189,6 +189,120 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     return status, sol, float(c @ sol), iterations, list(special_flags)
 
 # ==========================================
+# HELPER: DYNAMIC BRANCH & BOUND ENGINE
+# ==========================================
+def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
+    nodes = []
+    queue = []
+    
+    status, sol, z_val, _, _ = solve_simplex_big_m(obj_type, c, A_init, signs_init, b_init)
+    root_node = {
+        "id": "P0",
+        "label": f"P0 (Root)\nZ = {z_val:.2f}\n" + ", ".join([f"x{j+1}={sol[j]:.2f}" for j in range(len(c))]),
+        "status": status,
+        "z": z_val if status == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
+        "sol": sol,
+        "A": A_init,
+        "signs": signs_init,
+        "b": b_init,
+        "fill": "#2563eb" if status == "Optimal" else "#059669"
+    }
+    nodes.append(root_node)
+    queue.append(root_node)
+    
+    tree_edges = []
+    node_counter = 1
+    max_nodes = 15
+    
+    while queue and len(nodes) < max_nodes:
+        curr = queue.pop(0)
+        if curr["status"] != "Optimal":
+            continue
+            
+        sol = curr["sol"]
+        is_integer = all(np.isclose(val, round(val), atol=1e-4) for val in sol)
+        if is_integer:
+            continue
+            
+        frac_idx = -1
+        for j, val in enumerate(sol):
+            if not np.isclose(val, round(val), atol=1e-4):
+                frac_idx = j
+                break
+        if frac_idx == -1:
+            continue
+            
+        val = sol[frac_idx]
+        floor_v = int(np.floor(val))
+        ceil_v = int(np.ceil(val))
+        
+        # Branch 1: <= floor
+        r_le = np.zeros(len(c))
+        r_le[frac_idx] = 1.0
+        new_A1 = np.vstack([curr["A"], r_le])
+        new_signs1 = list(curr["signs"]) + ["<="]
+        new_b1 = np.append(curr["b"], floor_v)
+        
+        st1, sol1, z1, _, _ = solve_simplex_big_m(obj_type, c, new_A1, new_signs1, new_b1)
+        child1_id = f"P{node_counter}"
+        node_counter += 1
+        
+        if st1 == "Optimal":
+            c1_label = f"{child1_id} (x{frac_idx+1} ≤ {floor_v})\nZ = {z1:.2f}\n" + ", ".join([f"x{j+1}={sol1[j]:.2f}" for j in range(len(c))])
+            fill1 = '#2563eb'
+        else:
+            c1_label = f"{child1_id} (x{frac_idx+1} ≤ {floor_v})\n{st1}"
+            fill1 = '#059669'
+            
+        node1 = {
+            "id": child1_id,
+            "label": c1_label,
+            "status": st1,
+            "z": z1 if st1 == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
+            "sol": sol1,
+            "A": new_A1, "signs": new_signs1, "b": new_b1,
+            "fill": fill1
+        }
+        nodes.append(node1)
+        tree_edges.append((curr["id"], child1_id, f"x{frac_idx+1} ≤ {floor_v}"))
+        if st1 == "Optimal":
+            queue.append(node1)
+            
+        # Branch 2: >= ceil
+        r_ge = np.zeros(len(c))
+        r_ge[frac_idx] = 1.0
+        new_A2 = np.vstack([curr["A"], r_ge])
+        new_signs2 = list(curr["signs"]) + [">="]
+        new_b2 = np.append(curr["b"], ceil_v)
+        
+        st2, sol2, z2, _, _ = solve_simplex_big_m(obj_type, c, new_A2, new_signs2, new_b2)
+        child2_id = f"P{node_counter}"
+        node_counter += 1
+        
+        if st2 == "Optimal":
+            c2_label = f"{child2_id} (x{frac_idx+1} ≥ {ceil_v})\nZ = {z2:.2f}\n" + ", ".join([f"x{j+1}={sol2[j]:.2f}" for j in range(len(c))])
+            fill2 = '#2563eb'
+        else:
+            c2_label = f"{child2_id} (x{frac_idx+1} ≥ {ceil_v})\n{st2}"
+            fill2 = '#059669'
+            
+        node2 = {
+            "id": child2_id,
+            "label": c2_label,
+            "status": st2,
+            "z": z2 if st2 == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
+            "sol": sol2,
+            "A": new_A2, "signs": new_signs2, "b": new_b2,
+            "fill": fill2
+        }
+        nodes.append(node2)
+        tree_edges.append((curr["id"], child2_id, f"x{frac_idx+1} ≥ {ceil_v}"))
+        if st2 == "Optimal":
+            queue.append(node2)
+            
+    return nodes, tree_edges
+
+# ==========================================
 # HELPER: 2D FEASIBLE POLYGON
 # ==========================================
 def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
@@ -364,52 +478,53 @@ else:
             st.success(f"Leaving Variable selected: **Row {'1' if rhs1 < rhs2 else '2'}** (Most negative RHS).")
 
     # ------------------------------------------
-    # 3. BRANCH AND BOUND
+    # 3. BRANCH AND BOUND (Fully Dynamic based on custom inputs)
     # ------------------------------------------
     elif problem == "Branch and Bound":
-        st.markdown("### ⚙️ Step 1: ILP Problem Parameters")
+        st.markdown("### ⚙️ Step 1: ILP Problem Configuration")
         dim1, dim2, dim3 = st.columns(3)
-        with dim1: bb_obj = st.selectbox("BB Goal", ["Maximize", "Minimize"])
-        with dim2: bb_vars = st.number_input("BB Vars", min_value=2, max_value=3, value=2, step=1)
-        with dim3: bb_cons = st.number_input("BB Cons", min_value=1, max_value=5, value=2, step=1)
+        with dim1: bb_obj = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="bb_obj_goal")
+        with dim2: bb_vars = st.number_input("Variables count", min_value=2, max_value=2, value=2, step=1, key="bb_var_cnt")
+        with dim3: bb_cons = st.number_input("Constraints count", min_value=1, max_value=5, value=2, step=1, key="bb_con_cnt")
 
-        st.markdown("### 📊 Step 2: Objective & Constraints")
-        c1, c2 = st.columns(2)
-        with c1:
-            bc1 = st.number_input("c1", value=1.0)
-            bc2 = st.number_input("c2", value=1.0)
-        with c2:
-            st.markdown("**Default ILP Problem loaded:** Maximize $Z = x_1 + x_2$ subject to $2x_1 + 4x_2 \\le 7$, $5x_1 + 3x_2 \\le 15$")
+        st.markdown("### 📊 Step 2: Objective Function Coefficients ($c_j$)")
+        bc_cols = st.columns(int(bb_vars))
+        bb_c = []
+        for j in range(int(bb_vars)):
+            with bc_cols[j]: bb_c.append(st.number_input(f"bb_c{j+1}", value=1.0 if j==0 else 1.0, key=f"bb_c_{j}"))
 
-        if st.button("Run Full Recursive Branch & Bound Decision Tree"):
+        st.markdown(f"### ⛓️ Step 3: Constraints Setup")
+        bb_A, bb_signs, bb_b = [], [], []
+        default_bbA = [[2.0, 4.0], [5.0, 3.0]]
+        default_bbb = [7.0, 15.0]
+        for i in range(int(bb_cons)):
+            st.markdown(f"**Constraint {i+1}:**")
+            r_cols = st.columns(int(bb_vars) + 2)
+            row_a = []
+            for j in range(int(bb_vars)):
+                with r_cols[j]: row_a.append(st.number_input(f"bb_a_{i}_{j}", value=default_bbA[i][j] if i < 2 and j < 2 else 1.0, key=f"bb_a_{i}_{j}"))
+            with r_cols[int(bb_vars)]: bb_signs.append(st.selectbox(f"bb_s_{i}", ["<=", ">=", "="], key=f"bb_s_{i}"))
+            with r_cols[int(bb_vars) + 1]: bb_b.append(st.number_input(f"bb_b_{i}", value=default_bbb[i] if i < 2 else 10.0, key=f"bb_b_{i}"))
+            bb_A.append(row_a)
+
+        if st.button("Run Dynamic Branch & Bound Decision Tree"):
             st.divider()
-            st.markdown("### 🌳 Full Recursive Branch & Bound Decision Tree")
+            st.markdown("### 🌳 Dynamic Branch & Bound Decision Tree")
             
-            dot = graphviz.Digraph(comment="Branch and Bound Tree")
+            nodes, edges = solve_branch_and_bound_tree(bb_obj, np.array(bb_c), np.array(bb_A), bb_signs, np.array(bb_b))
+            
+            dot = graphviz.Digraph(comment="Dynamic Branch and Bound Tree")
             dot.attr(bgcolor='transparent', rankdir='TB')
             dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true', fontname='Arial')
 
-            dot.node('P0', label='P0 (Root)\nZ = 7.00\nx1=0.00, x2=1.75', fillcolor='#2563eb', fontsize='14')
-            dot.node('P1', label='P_1 (x2 ≤ 1)\nZ = 5.50\nx1=1.50, x2=1.00', fillcolor='#2563eb')
-            dot.node('P2_inf', label='P_2 (x2 ≥ 2)\nZ = 7.00\nInfeasible', fillcolor='#059669')
+            for node in nodes:
+                dot.node(node["id"], label=node["label"], fillcolor=node["fill"])
             
-            dot.edge('P0', 'P1', color='white')
-            dot.edge('P0', 'P2_inf', color='white')
-
-            dot.node('P2', label='P_2 (x1 ≤ 1)\nZ = 5.00\nx1=1.00, x2=1.00', fillcolor='#10b981', penwidth='3')
-            dot.node('P3', label='P_3 (x1 ≥ 2)\nZ = 5.00\nx1=2.00, x2=0.75', fillcolor='#2563eb')
-
-            dot.edge('P1', 'P2', color='#10b981', penwidth='3', label=' Optimal Route')
-            dot.edge('P1', 'P3', color='white')
-
-            dot.node('P5', label='P_5 (x2 ≤ 0)\nZ = 3.00\nx1=3.00, x2=0.00', fillcolor='#059669')
-            dot.node('P6', label='P_6 (x2 ≥ 1)\nZ = 5.00\nInfeasible', fillcolor='#059669')
-
-            dot.edge('P3', 'P5', color='white')
-            dot.edge('P3', 'P6', color='white')
+            for parent_id, child_id, label in edges:
+                dot.edge(parent_id, child_id, label=f" {label}", color='white', fontcolor='white')
 
             st.graphviz_chart(dot, use_container_width=True)
-            st.success("🎯 **Optimal Integer Solution Found:** $x_1 = 1, x_2 = 1$ with **Optimal Integer Z = 5.00**[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span)")
+            st.success("🎯 **Branch & Bound Tree Generated Successfully** from your custom parameters!")
 
     # ------------------------------------------
     # 4. GOMORY FRACTIONAL CUT
@@ -475,28 +590,25 @@ else:
 
             if is_tsp:
                 st.markdown(f"### 🗺️ Travelling Salesman Problem — Full Multi-Tier State Tree (Start/End: Node {start_node})")
-                st.markdown("Matching your notebook photo: Root node evaluating all branches $\rightarrow$ Primary city branches $\rightarrow$ Secondary sub-tour nodes covering all cities $\rightarrow$ Final base weight connections[span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span):")
+                st.markdown("Matching your notebook photo: Root node evaluating all branches $\rightarrow$ Primary city branches $\rightarrow$ Secondary sub-tour nodes covering all cities $\rightarrow$ Final base weight connections[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span):")
 
                 dot = graphviz.Digraph(comment="TSP State Tree")
                 dot.attr(bgcolor='transparent', rankdir='TB')
                 dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true', fontname='Arial')
 
-                # Root Node (Red Circle)
                 root_id = f"root_{start_node}"
                 dot.node(root_id, label=f"Start ({start_node})\nmin{{ 10+25, 15+25, 20+23 }}\n= 35 (Optimal Tour Cost)", fillcolor='#ef4444', shape='doublecircle', fontsize='13')
 
-                # Level 1: Outgoing from start to all other cities
                 for j in range(n_int):
                     if j == start_idx: continue
                     dest_1 = node_names[j]
                     cost_1 = matrix_data[start_idx, j]
                     l1_id = f"l1_{start_node}_{dest_1}"
-                    is_opt_l1 = (j == 1) # Highlight optimal branch
+                    is_opt_l1 = (j == 1)
                     
                     dot.node(l1_id, label=f"Node ({dest_1})\nmin{{ sub-tours }}\nCost: {cost_1}", fillcolor='#10b981' if is_opt_l1 else '#2563eb')
                     dot.edge(root_id, l1_id, label=f" {start_node}→{dest_1} ({cost_1})", color='#10b981' if is_opt_l1 else 'white', penwidth='3' if is_opt_l1 else '1', fontcolor='white')
 
-                    # Level 2: Visiting remaining unvisited cities to ensure ALL cities are covered
                     for k in range(n_int):
                         if k == start_idx or k == j: continue
                         dest_2 = node_names[k]
@@ -506,7 +618,6 @@ else:
                         dot.node(l2_id, label=f"Node ({dest_2})\nLeg: {dest_1}→{dest_2}\nCost: {cost_2}", fillcolor='#334155')
                         dot.edge(l1_id, l2_id, label=f" {dest_1}→{dest_2} ({cost_2})", color='white', fontcolor='white')
 
-                        # Level 3: Final Base Leaf Connections visiting final missing city and returning to start
                         for m in range(n_int):
                             if m == start_idx or m == j or m == k:
                                 dest_base = node_names[m]
@@ -516,15 +627,15 @@ else:
                                 dot.edge(l2_id, base_id, color='white')
 
                 st.graphviz_chart(dot, use_container_width=True)
-                st.success(f"🎯 **Optimal TSP Tour Route Covering All Cities:** Node {start_node} → B → D → C → {start_node} | **Total Optimal Cost = 35 units**[span_4](start_span)[span_4](end_span)[span_5](start_span)[span_5](end_span)")
+                st.success(f"🎯 **Optimal TSP Tour Route Covering All Cities:** Node {start_node} → B → D → C → {start_node} | **Total Optimal Cost = 35 units**[span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span)")
 
             else:
                 st.markdown(f"### 🌐 Network Shortest Path Problem (From Node {start_node} to Node {end_node})")
-                dp_mode = st.radio("Select Iteration Method:", ["Forward Iteration", "Backward Iteration"], key="network_dp_mode")
+                dp_mode = st.radio("Select Iteration Method:", ["Forward Iteration", "Backward Iteration"], key="network_dp_mode_fixed")
 
                 if "Forward" in dp_mode:
                     st.markdown("### 📥 Forward Iteration Summary (Dynamic Programming)")
-                    st.markdown(f"Starting from node {start_node}, let's compute stages forward[span_6](start_span)[span_6](end_span):")
+                    st.markdown(f"Starting from node {start_node}, let's compute stages forward[span_4](start_span)[span_4](end_span):")
                     df_fwd1 = pd.DataFrame({
                         "Target Node": ["Node 5", "Node 6", "Node 7"],
                         "Min Formula": [
@@ -536,13 +647,13 @@ else:
                         "Optimal Decision (via node)": ["Node 4 (Optimal)", "Node 3 (Optimal)", "Node 5 (Optimal)"]
                     })
                     st.dataframe(df_fwd1, use_container_width=True)
-                    st.success(f"🎯 **Shortest Route (Forward):** {start_node} → 4 → 5 → 7 | **Total Distance = 27**[span_7](start_span)[span_7](end_span)")
+                    st.success(f"🎯 **Shortest Route (Forward):** {start_node} → 4 → 5 → 7 | **Total Distance = 27**[span_5](start_span)[span_5](end_span)")
 
                 else:
                     st.markdown("### 📤 Backward Iteration Tables (Matching Notebook Image)")
-                    st.markdown(f"We have $f_4(x_4) = 0$ for destination and order of computation $f_3 \rightarrow f_2 \rightarrow f_1$[span_8](start_span)[span_8](end_span).")
+                    st.markdown(f"We have $f_4(x_4) = 0$ for destination and order of computation $f_3 \rightarrow f_2 \rightarrow f_1$[span_6](start_span)[span_6](end_span).")
 
-                    st.markdown("#### **Stage 3 Calculation ($f_3$)**[span_9](start_span)[span_9](end_span)")
+                    st.markdown("#### **Stage 3 Calculation ($f_3$)**[span_7](start_span)[span_7](end_span)")
                     df_s3 = pd.DataFrame({
                         "x3": ["Node 5", "Node 6"],
                         "d(x3, x4)": [9, 6],
@@ -551,7 +662,7 @@ else:
                     })
                     st.dataframe(df_s3, use_container_width=True)
 
-                    st.markdown("#### **Stage 2 Calculation ($f_2$)**[span_10](start_span)[span_10](end_span)")
+                    st.markdown("#### **Stage 2 Calculation ($f_2$)**[span_8](start_span)[span_8](end_span)")
                     df_s2 = pd.DataFrame({
                         "x2": ["Node 2", "Node 3", "Node 4"],
                         "x3 = 5 (dist + f3=9)": ["12 + 9 = 21", "8 + 9 = 17", "7 + 9 = 16"],
@@ -561,7 +672,7 @@ else:
                     })
                     st.dataframe(df_s2, use_container_width=True)
 
-                    st.markdown("#### **Stage 1 Calculation ($f_1$)**[span_11](start_span)[span_11](end_span)")
+                    st.markdown("#### **Stage 1 Calculation ($f_1$)**[span_9](start_span)[span_9](end_span)")
                     df_s1 = pd.DataFrame({
                         "x1": [start_node],
                         "x2 = 2 (7 + f2=21)": [28],
@@ -571,9 +682,8 @@ else:
                         "x2* (Optimal Node)": [4]
                     })
                     st.dataframe(df_s1, use_container_width=True)
-                    st.success(f"🎯 **Shortest Route (Backward):** {start_node} → 4 → 5 → 7 | **Total Distance = 27**[span_12](start_span)[span_12](end_span)[span_13](start_span)[span_13](end_span)")
+                    st.success(f"🎯 **Shortest Route (Backward):** {start_node} → 4 → 5 → 7 | **Total Distance = 27**[span_10](start_span)[span_10](end_span)[span_11](start_span)[span_11](end_span)")
 
-                # Highlighted Optimal Network Graph
                 dot = graphviz.Digraph()
                 dot.attr(bgcolor='transparent', rankdir='LR')
                 dot.node_attr.update(style='filled', fillcolor='#6366f1', fontcolor='white', shape='circle')
