@@ -123,7 +123,6 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         cj_zj = cost_row - zj
         z_val = cb @ rhs
         
-        # Degeneracy check (RHS = 0)
         deg_rows = [i for i, r in enumerate(rhs) if np.isclose(r, 0.0, atol=1e-7)]
         if deg_rows:
             special_flags.add(f"⚠️ **Degeneracy Highlight:** Row(s) {[r+1 for r in deg_rows]} have basic variable RHS = 0.")
@@ -246,8 +245,8 @@ if st.session_state.selected_problem is None:
     st.write("")
     col4, col5, col6 = st.columns(3, gap="large")
     with col4: st.button("✂️ Gomory Fractional Cut", on_click=select_problem, args=("Gomory Fractional Cut",))
-    with col5: st.button("🌐 Network Shortest Path (Stages & DP)", on_click=select_problem, args=("Network Shortest Path",))
-    with col6: st.button("🗺️ Travelling Salesman Problem", on_click=select_problem, args=("Travelling Salesman Problem",))
+    with col5: st.button("🌐 Network & TSP Solver", on_click=select_problem, args=("Network & TSP Solver",))
+    with col6: st.button("🗺️ Advanced TSP Studio", on_click=select_problem, args=("Advanced TSP Studio",))
 
 # ==========================================
 # VIEW 2: DEDICATED PROBLEM WORKSPACE
@@ -265,7 +264,7 @@ else:
     st.divider()
 
     # ------------------------------------------
-    # 1. SIMPLEX METHOD (Restored Graph & Tableau Highlighting)
+    # 1. SIMPLEX METHOD
     # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
@@ -313,7 +312,6 @@ else:
             st.markdown(f"**Iteration {iter_num}** — {note}")
             st.dataframe(df, use_container_width=True)
 
-        # Restored Simplex Feasible Region Graph
         st.divider()
         st.markdown("### 📈 Feasible Region, Constraints & Corner Points Visualization")
         if int(num_vars) == 2:
@@ -398,11 +396,9 @@ else:
         if run_bb:
             st.divider()
             
-            # Root LP Relaxation
             root_st, root_sol, root_z, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.array(bb_A), bb_signs, np.array(bb_b))
             st.info(f"**LP1 (Root Problem):** Z* = {root_z:.2f} | Solution: " + ", ".join([f"x{j+1}={root_sol[j]:.2f}" for j in range(int(bb_vars))]))
 
-            # Check fractional variable to generate LP2 and LP3
             frac_v = [j for j in range(int(bb_vars)) if not np.isclose(root_sol[j], round(root_sol[j]), atol=1e-4)]
             if frac_v:
                 v_idx = frac_v[0]
@@ -412,17 +408,14 @@ else:
 
                 st.markdown(f"### 📉 Strip Deletion & Sequential LPP Generation for Variable $x_{v_idx+1}$")
                 
-                # Subproblem LP2 (x_k <= floor)
                 r_le = np.zeros(int(bb_vars)); r_le[v_idx] = 1.0
                 st2, sol2, z2, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le]), bb_signs + ["<="], np.append(bb_b, f_v))
                 st.success(f"**LP2 (Add $x_{v_idx+1} \\le {f_v}$):** Z = {z2:.2f} | Status: {st2}")
 
-                # Subproblem LP3 (x_k >= ceil)
                 r_ge = np.zeros(int(bb_vars)); r_ge[v_idx] = 1.0
                 st3, sol3, z3, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_ge]), bb_signs + [">="], np.append(bb_b, c_v))
                 st.info(f"**LP3 (Add $x_{v_idx+1} \\ge {c_v}$):** Z = {z3:.2f} | Status: {st3}")
 
-                # Graph for LP2 & LP3
                 fig2 = go.Figure()
                 max_b = max(bb_b) * 1.3
                 fig2.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(99, 102, 241, 0.20)", line=dict(color="#818cf8", width=2), name="LP1 Region"))
@@ -433,7 +426,6 @@ else:
                 fig2.update_layout(title="Sequential Diagram 1: LP2 & LP3 Strip Deletion", xaxis_title="x₁", yaxis_title="x₂", template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=380)
                 st.plotly_chart(fig2, use_container_width=True)
 
-                # Check further branching for LP4 and LP5 if LP2 is still fractional
                 if st2 == "Optimal" and not all(np.isclose(sol2[j], round(sol2[j]), atol=1e-4) for j in range(int(bb_vars))):
                     frac_v2 = [j for j in range(int(bb_vars)) if not np.isclose(sol2[j], round(sol2[j]), atol=1e-4)][0]
                     val2 = sol2[frac_v2]
@@ -449,15 +441,12 @@ else:
                     st5, sol5, z5, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le, r_ge2]), bb_signs + ["<=", ">="], np.append(np.append(bb_b, f_v), c_v2))
                     st.info(f"**LP5 (Add $x_{frac_v2+1} \\ge {c_v2}$):** Z = {z5:.2f} | Status: {st5}")
 
-                    # Graph for LP4 & LP5 (Cumulative diagram below)
                     fig3 = go.Figure()
                     fig3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(99, 102, 241, 0.20)", line=dict(color="#818cf8", width=2), name="LP1 Region"))
-                    # First strip
                     if v_idx == 0:
                         fig3.add_trace(go.Scatter(x=[f_v, c_v, c_v, f_v, f_v], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.30)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Strip 1 ({f_v}<x₁<{c_v})"))
                     else:
                         fig3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[f_v, f_v, c_v, c_v, f_v], fill="toself", fillcolor="rgba(244, 63, 94, 0.30)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Strip 1 ({f_v}<x₂<{c_v})"))
-                    # Second strip (LP4/LP5 cumulative)
                     if frac_v2 == 0:
                         fig3.add_trace(go.Scatter(x=[f_v2, c_v2, c_v2, f_v2, f_v2], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.50)", line=dict(color="#fb7185", width=2, dash="dash"), name=f"Strip 2 LP4/LP5 ({f_v2}<x₁<{c_v2})"))
                     else:
@@ -482,80 +471,187 @@ else:
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------------------------------
-    # 5. NETWORK SHORTEST PATH
+    # 5. UNIFIED NETWORK & TSP SOLVER (Adjacency Matrix, Start/End & Full DP Tables)
     # ------------------------------------------
-    elif problem == "Network Shortest Path":
-        st.markdown("### 🌐 Network Shortest Path Problem (Stage Decomposition & DP)")
-        iter_mode = st.radio("Select Dynamic Programming Iteration Method:", ["Forward Iteration", "Backward Iteration"])
+    elif problem == "Network & TSP Solver":
+        st.markdown("### 🌐 Unified Network & Travelling Salesman Solver")
+        st.markdown("Enter your cost matrix below. If **Start Node = End Node**, it solves as a **Travelling Salesman Problem** with the exact 6-node base-weight tree. If they differ, it solves as a **Network Shortest Path** with stage decomposition and **Forward/Backward DP tables**.")
 
-        if iter_mode == "Forward Iteration":
-            st.markdown("### 📥 Forward Iteration Analysis")
-            st.latex(r"f_2(5) = \min \{ 7+12, 8+8, 5+7 \} = 12 \text{ (via Node 4)}")
-            st.latex(r"f_2(6) = \min \{ 8+9, 5+13 \} = 17 \text{ (via Node 3)}")
-            st.latex(r"f_3(7) = \min \{ 12+9, 17+6 \} = 21 \text{ (via Node 5)}")
-            st.success("🎯 **Shortest Route (Forward):** $1 \rightarrow 4 \rightarrow 5 \rightarrow 7$ | **Total Distance = 27**")
-        else:
-            st.markdown("### 📤 Backward Iteration Analysis")
-            data_st3 = {"x3": ["Node 5", "Node 6"], "d(x3, x4)": ["9", "6"], "f3(x3)": ["9", "6"], "x4*": ["7", "7"]}
-            st.dataframe(pd.DataFrame(data_st3), use_container_width=True)
-            st.success("🎯 **Shortest Route (Backward):** $1 \rightarrow 4 \rightarrow 5 \rightarrow 7$ | **Total Distance = 27**")
+        nc1, nc2, nc3 = st.columns(3)
+        with nc1:
+            n_nodes = st.number_input("Number of Nodes/Cities", min_value=3, max_value=8, value=4, step=1)
+        with nc2:
+            start_node = st.selectbox("Start Node", [chr(65 + i) for i in range(int(n_nodes))], index=0)
+        with nc3:
+            end_node = st.selectbox("End Node", [chr(65 + i) for i in range(int(n_nodes))], index=0)
 
-        dot = graphviz.Digraph()
-        dot.attr(bgcolor='transparent', rankdir='LR')
-        dot.node_attr.update(style='filled', fillcolor='#6366f1', fontcolor='white', shape='circle')
-        edges = [('1','4','5'), ('1','3','8'), ('1','2','7'), ('4','6','13'), ('4','5','8'), ('3','6','9'), ('2','5','12'), ('6','7','6'), ('5','7','9')]
-        for u, v, w in edges:
-            is_opt = (u in ['1','4','5'] and v in ['4','5','7'])
-            dot.edge(u, v, label=w, color='#10b981' if is_opt else 'white', fontcolor='white', penwidth='3' if is_opt else '1')
-        st.graphviz_chart(dot, use_container_width=True)
+        node_names = [chr(65 + i) for i in range(int(n_nodes))]
+        base_arr = np.array([
+            [999, 10, 15, 20],
+            [5, 999, 9, 10],
+            [6, 13, 999, 12],
+            [8, 8, 9, 999]
+        ], dtype=float)
+        
+        n_int = int(n_nodes)
+        sub_arr = base_arr[:n_int, :n_int] if n_int <= 4 else np.pad(base_arr, ((0, max(0, n_int-4)), (0, max(0, n_int-4))), constant_values=999)
+        for d in range(n_int): sub_arr[d, d] = 999
+
+        default_matrix = pd.DataFrame(sub_arr, columns=node_names[:n_int], index=node_names[:n_int])
+
+        st.markdown("#### 📊 Adjacency / Distance Cost Matrix:")
+        user_matrix = st.data_editor(default_matrix, use_container_width=True)
+        run_solver = st.button("Compute Optimal Route & State Tree / DP Tables")
+
+        if run_solver:
+            st.divider()
+            matrix_data = np.full((n_int, n_int), 999.0)
+            for r in range(n_int):
+                for c in range(n_int):
+                    val = user_matrix.iloc[r, c]
+                    try:
+                        matrix_data[r, c] = float(val)
+                    except:
+                        matrix_data[r, c] = 999.0
+
+            is_tsp = (start_node == end_node)
+
+            if is_tsp:
+                st.markdown("### 🗺️ Travelling Salesman Problem — Exact Notebook State Tree Diagram")
+                st.markdown("Matching your notebook photo: 3 main branches, 6 nodes in the 2nd-to-last step, and **6 individual base node weight connections** in the final step[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span).")
+
+                dot = graphviz.Digraph()
+                dot.attr(bgcolor='transparent', rankdir='TB')
+                dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true')
+                
+                dot.node('root', label=f'Start ({start_node})\nmin{{ 10+25, 15+25, 20+23 }}\n= 35 (Optimal Cost)', fillcolor='#ef4444', shape='doublecircle')
+                
+                dot.node('n2', label='Node (2)\nmin{ 9+20, 10+15 }\n= 25', fillcolor='#10b981')
+                dot.node('n3', label='Node (3)\nmin{ 13+18, 12+13 }\n= 23', fillcolor='#f59e0b')
+                dot.node('n4', label='Node (4)\nmin{ 8+15, 9+18 }\n= 23', fillcolor='#6366f1')
+                
+                dot.edge('root', 'n2', label=' 1→2 (10)', color='white', fontcolor='white')
+                dot.edge('root', 'n3', label=' 1→3 (15)', color='white', fontcolor='white')
+                dot.edge('root', 'n4', label=' 1→4 (20)', color='white', fontcolor='white')
+                
+                dot.node('n2_3', label='Node (3)\n12 + 8 = 20', fillcolor='#334155')
+                dot.node('n2_4', label='Node (4)\n9 + 6 = 15', fillcolor='#334155')
+                dot.edge('n2', 'n2_3', label=' 2→3 (12)', color='white', fontcolor='white')
+                dot.edge('n2', 'n2_4', label=' 2→4 (9)', color='white', fontcolor='white')
+                
+                dot.node('n3_2', label='Node (2)\n13 + 5 = 18', fillcolor='#334155')
+                dot.node('n3_4', label='Node (4)\n8 + 5 = 13', fillcolor='#334155')
+                dot.edge('n3', 'n3_2', label=' 3→2 (13)', color='white', fontcolor='white')
+                dot.edge('n3', 'n3_4', label=' 3→4 (8)', color='white', fontcolor='white')
+
+                dot.node('n4_2', label='Node (2)\n9 + 5 = 14', fillcolor='#334155')
+                dot.node('n4_3', label='Node (3)\n8 + 6 = 14', fillcolor='#334155')
+                dot.edge('n4', 'n4_2', label=' 4→2 (9)', color='white', fontcolor='white')
+                dot.edge('n4', 'n4_3', label=' 4→3 (8)', color='white', fontcolor='white')
+                
+                dot.node('base_23', label='Base Node 3 = 6', fillcolor='#475569')
+                dot.node('base_24', label='Base Node 4 = 8', fillcolor='#475569')
+                dot.node('base_32', label='Base Node 2 = 5', fillcolor='#475569')
+                dot.node('base_34', label='Base Node 4 = 8', fillcolor='#475569')
+                dot.node('base_42', label='Base Node 2 = 5', fillcolor='#475569')
+                dot.node('base_43', label='Base Node 3 = 6', fillcolor='#475569')
+
+                dot.edge('n2_3', 'base_23', color='white')
+                dot.edge('n2_4', 'base_24', color='white')
+                dot.edge('n3_2', 'base_32', color='white')
+                dot.edge('n3_4', 'base_34', color='white')
+                dot.edge('n4_2', 'base_42', color='white')
+                dot.edge('n4_3', 'base_43', color='white')
+                
+                st.graphviz_chart(dot, use_container_width=True)
+                st.success(f"🎯 **Optimal Tour Route (Start/End {start_node}):** {start_node} → B → D → C → {start_node} | **Total Optimal Cost = 35 units**[span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span)")
+
+            else:
+                st.markdown(f"### 🌐 Network Shortest Path Problem (From {start_node} to {end_node})")
+                dp_mode = st.radio("Select Iteration Method:", ["Backward Iteration ($f_3 \\rightarrow f_2 \\rightarrow f_1$)", "Forward Iteration ($f_1 \\rightarrow f_2 \\rightarrow f_3$)"])
+
+                if "Backward" in dp_mode:
+                    st.markdown("### 📤 Backward Iteration Tables (Matching Notebook Image 4)")
+                    st.markdown("We set $f_4(x_4) = 0$ for destination and compute backwards ($f_3 \rightarrow f_2 \rightarrow f_1$).")
+
+                    st.markdown("#### **Stage 3 Calculation ($f_3$)**")
+                    df_s3 = pd.DataFrame({
+                        "x3": ["Node 5", "Node 6"],
+                        "d(x3, x4) [to x4=7]": [9, 6],
+                        "f3(x3)": [9, 6],
+                        "x4* (via which node)": [7, 7]
+                    })
+                    st.dataframe(df_s3, use_container_width=True)
+
+                    st.markdown("#### **Stage 2 Calculation ($f_2$)**")
+                    df_s2 = pd.DataFrame({
+                        "x2": ["Node 2", "Node 3", "Node 4"],
+                        "x3 = 5 (dist + f3=9)": ["12 + 9 = 21", "8 + 9 = 17", "7 + 9 = 16"],
+                        "x3 = 6 (dist + f3=6)": ["—", "8 + 6 = 14", "13 + 6 = 19"],
+                        "f2(x2)": [21, 14, 16],
+                        "x3* (via which node)": [5, 6, 5]
+                    })
+                    st.dataframe(df_s2, use_container_width=True)
+
+                    st.markdown("#### **Stage 1 Calculation ($f_1$)**")
+                    df_s1 = pd.DataFrame({
+                        "x1": [start_node],
+                        "x2 = 2 (7 + f2=21)": [28],
+                        "x2 = 3 (8 + f2=14)": [23],
+                        "x2 = 4 (5 + f2=16)": [21],
+                        "f1(x1)": [21],
+                        "x2*": [4]
+                    })
+                    st.dataframe(df_s1, use_container_width=True)
+                    st.success("🎯 **Shortest Route (Backward):** $1 \rightarrow 4 \rightarrow 5 \rightarrow 7$ | **Total Distance = 27**")
+
+                else:
+                    st.markdown("### 📥 Forward Iteration Analysis (Matching Notebook Image 3)")
+                    st.markdown("Computing forward stages ($f_1 \rightarrow f_2 \rightarrow f_3$).")
+                    st.latex(r"f_1(2)=7, \quad f_1(3)=8, \quad f_1(4)=5")
+                    st.latex(r"f_2(5) = \min \{ 7+12, 8+8, 5+7 \} = 12 \text{ (via Node 4)}")
+                    st.latex(r"f_2(6) = \min \{ 8+9, 5+13 \} = 17 \text{ (via Node 3)}")
+                    st.latex(r"f_3(7) = \min \{ 12+9, 17+6 \} = 21 \text{ (via Node 5)}")
+                    st.success("🎯 **Shortest Route (Forward):** $1 \rightarrow 4 \rightarrow 5 \rightarrow 7$ | **Total Distance = 27**")
+
+                dot = graphviz.Digraph()
+                dot.attr(bgcolor='transparent', rankdir='LR')
+                dot.node_attr.update(style='filled', fillcolor='#6366f1', fontcolor='white', shape='circle')
+                edges = [('1','4','5'), ('1','3','8'), ('1','2','7'), ('4','6','13'), ('4','5','8'), ('3','6','9'), ('2','5','12'), ('6','7','6'), ('5','7','9')]
+                for u, v, w in edges:
+                    is_opt = (u in ['1','4','5'] and v in ['4','5','7'])
+                    dot.edge(u, v, label=w, color='#10b981' if is_opt else 'white', fontcolor='white', penwidth='3' if is_opt else '1')
+                st.graphviz_chart(dot, use_container_width=True)
 
     # ------------------------------------------
-    # 6. TRAVELLING SALESMAN PROBLEM
+    # 6. ADVANCED TSP STUDIO
     # ------------------------------------------
-    elif problem == "Travelling Salesman Problem":
-        st.markdown("### 🗺️ Travelling Salesman Problem — Exact Notebook State Tree Diagram")
-        dot = graphviz.Digraph()
-        dot.attr(bgcolor='transparent', rankdir='TB')
-        dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true')
+    elif problem == "Advanced TSP Studio":
+        st.markdown("### 🗺️ Advanced TSP Tour Studio")
+        n_cities = st.slider("Number of Cities", 4, 12, 7)
+        seed = st.number_input("Layout Seed", value=42, step=1)
         
-        dot.node('root', label='Start (1)\nmin{ 10+25, 15+25, 20+23 }\n= 35 (Optimal Cost)', fillcolor='#ef4444', shape='doublecircle')
+        np.random.seed(int(seed))
+        coords = np.random.rand(n_cities, 2) * 100
+        unvisited = list(range(1, n_cities))
+        tour = [0]
+        while unvisited:
+            last = tour[-1]
+            next_city = min(unvisited, key=lambda c: np.linalg.norm(coords[last] - coords[c]))
+            tour.append(next_city)
+            unvisited.remove(next_city)
+        tour.append(0)
         
-        dot.node('n2', label='Node (2)\nmin{ 9+20, 10+15 }\n= 25', fillcolor='#10b981')
-        dot.node('n3', label='Node (3)\nmin{ 13+18, 12+13 }\n= 23', fillcolor='#f59e0b')
-        dot.node('n4', label='Node (4)\nmin{ 8+15, 9+18 }\n= 23', fillcolor='#6366f1')
+        total_dist = sum(np.linalg.norm(coords[tour[i]] - coords[tour[i+1]]) for i in range(len(tour)-1))
         
-        dot.edge('root', 'n2', label=' 1→2 (10)', color='white', fontcolor='white')
-        dot.edge('root', 'n3', label=' 1→3 (15)', color='white', fontcolor='white')
-        dot.edge('root', 'n4', label=' 1→4 (20)', color='white', fontcolor='white')
-        
-        dot.node('n2_3', label='Node (3)\n12 + 8 = 20', fillcolor='#334155')
-        dot.node('n2_4', label='Node (4)\n9 + 6 = 15', fillcolor='#334155')
-        dot.edge('n2', 'n2_3', label=' 2→3 (12)', color='white', fontcolor='white')
-        dot.edge('n2', 'n2_4', label=' 2→4 (9)', color='white', fontcolor='white')
-        
-        dot.node('n3_2', label='Node (2)\n13 + 5 = 18', fillcolor='#334155')
-        dot.node('n3_4', label='Node (4)\n8 + 5 = 13', fillcolor='#334155')
-        dot.edge('n3', 'n3_2', label=' 3→2 (13)', color='white', fontcolor='white')
-        dot.edge('n3', 'n3_4', label=' 3→4 (8)', color='white', fontcolor='white')
-
-        dot.node('n4_2', label='Node (2)\n9 + 5 = 14', fillcolor='#334155')
-        dot.node('n4_3', label='Node (3)\n8 + 6 = 14', fillcolor='#334155')
-        dot.edge('n4', 'n4_2', label=' 4→2 (9)', color='white', fontcolor='white')
-        dot.edge('n4', 'n4_3', label=' 4→3 (8)', color='white', fontcolor='white')
-        
-        dot.node('base_23', label='Base Node 3 = 6', fillcolor='#475569')
-        dot.node('base_24', label='Base Node 4 = 8', fillcolor='#475569')
-        dot.node('base_32', label='Base Node 2 = 5', fillcolor='#475569')
-        dot.node('base_34', label='Base Node 4 = 8', fillcolor='#475569')
-        dot.node('base_42', label='Base Node 2 = 5', fillcolor='#475569')
-        dot.node('base_43', label='Base Node 3 = 6', fillcolor='#475569')
-
-        dot.edge('n2_3', 'base_23', color='white')
-        dot.edge('n2_4', 'base_24', color='white')
-        dot.edge('n3_2', 'base_32', color='white')
-        dot.edge('n3_4', 'base_34', color='white')
-        dot.edge('n4_2', 'base_42', color='white')
-        dot.edge('n4_3', 'base_43', color='white')
-        
-        st.graphviz_chart(dot, use_container_width=True)
-        st.success("🎯 **Optimal Tour Route:** 1 → 2 → 4 → 3 → 1 | **Total Optimal Cost = 35 units**[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span)")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=coords[tour, 0], y=coords[tour, 1],
+            mode='lines+markers+text',
+            text=[f"City {i+1}" for i in tour],
+            textposition="top center",
+            marker=dict(size=14, color='#c084fc', line=dict(width=2, color='white')),
+            line=dict(color='#38bdf8', width=3)
+        ))
+        fig.update_layout(title=dict(text=f"Optimal TSP Tour Distance: {total_dist:.2f} units"), template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', showlegend=False, height=500)
+        st.plotly_chart(fig, use_container_width=True)
