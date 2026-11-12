@@ -72,7 +72,7 @@ def go_home():
     st.session_state.selected_problem = None
 
 # ==========================================
-# HELPER: FLEXIBLE BIG-M SIMPLEX ENGINE
+# HELPER: FLEXIBLE BIG-M SIMPLEX ENGINE WITH HIGHLIGHTS
 # ==========================================
 def solve_simplex_big_m(obj_type, c, A, signs, b):
     M = 1e5
@@ -123,8 +123,9 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         cj_zj = cost_row - zj
         z_val = cb @ rhs
         
+        # Check Degeneracy (Basic variable equals 0 in X_B)
         if any(np.isclose(rhs, 0.0, atol=1e-7)):
-            special_flags.add("Degeneracy Detected")
+            special_flags.add("Degeneracy Detected: A basic variable has X_B (RHS) = 0.")
             
         if np.max(cj_zj) <= 1e-7:
             df = pd.DataFrame(tableau, columns=var_names)
@@ -132,11 +133,18 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             df.insert(1, "C_B", np.round(cb, 3))
             df["X_B (RHS)"] = np.round(rhs, 4)
             df.loc[len(df)] = ["Z_j", ""] + list(np.round(zj, 3)) + [round(z_val if obj_type == "Maximize" else -z_val, 4)]
+            df.loc[len(df)] = ["C_j - Z_j", ""] + list(np.round(cj_zj, 3)) + [""]
             iterations.append((it + 1, df, "Optimal Tableau Reached"))
             
             for idx_pos, b_idx in enumerate(basis_indices):
                 if b_idx in artificial_indices and rhs[idx_pos] > 1e-6:
                     status = "Infeasible"
+                    special_flags.add(f"Infeasible Solution: Artificial variable {var_names[b_idx]} remains in basis with positive RHS ({rhs[idx_pos]:.4f}).")
+            
+            if status == "Optimal":
+                non_basic = [j for j in range(len(var_names)) if j not in basis_indices and j not in artificial_indices]
+                if any(np.isclose(cj_zj[j], 0.0, atol=1e-7) for j in non_basic):
+                    special_flags.add("Alternative Optima Detected: C_j - Z_j = 0 for at least one non-basic variable.")
             break
             
         entering_col = int(np.argmax(cj_zj))
@@ -144,6 +152,11 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         
         if all(col_vals <= 1e-7):
             status = "Unbounded"
+            special_flags.add(f"Unbounded Solution: Pivot column entries for {var_names[entering_col]} are ≤ 0, allowing objective to grow infinitely.")
+            df = pd.DataFrame(tableau, columns=var_names)
+            df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
+            df["X_B (RHS)"] = np.round(rhs, 4)
+            iterations.append((it + 1, df, f"Unbounded at {var_names[entering_col]}"))
             break
             
         valid_ratios = []
@@ -151,11 +164,13 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             if col_vals[i] > 1e-7:
                 valid_ratios.append((rhs[i] / col_vals[i], i))
                 
-        if not valid_ratios:
-            status = "Unbounded"
-            break
-            
         leaving_row = min(valid_ratios, key=lambda x: x[0])[1]
+        
+        df = pd.DataFrame(np.round(tableau, 4), columns=var_names)
+        df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
+        df.insert(1, "C_B", np.round(cb, 3))
+        df["X_B (RHS)"] = np.round(rhs, 4)
+        iterations.append((it + 1, df, f"Entering: **{var_names[entering_col]}** | Leaving: **{var_names[basis_indices[leaving_row]]}**"))
         
         pivot_val = tableau[leaving_row, entering_col]
         tableau[leaving_row] /= pivot_val
@@ -173,20 +188,20 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     return status, sol, float(c @ sol), iterations, list(special_flags)
 
 # ==========================================
-# HELPER: RECURSIVE BRANCH AND BOUND ENGINE
+# HELPER: RECURSIVE BRANCH & BOUND WITH STRIPS
 # ==========================================
 def run_recursive_branch_and_bound(obj_type, c, A, signs, b):
-    # Queue stores tuples: (A_matrix, signs_list, b_vector, parent_id, branch_label)
     root_status, root_sol, root_z, _, _ = solve_simplex_big_m(obj_type, c, A, signs, b)
     
     tree_nodes = []
-    queue = [(A, signs, b, "Root", "P0 (Root)", root_status, root_sol, root_z)]
+    # Queue stores: (A_matrix, signs_list, b_vector, parent_id, node_name, status, sol, z_val, deleted_strips_list)
+    queue = [(A, signs, b, "Root", "P0 (Root)", root_status, root_sol, root_z, [])]
     best_integer_z = -1e18 if obj_type == "Maximize" else 1e18
     best_integer_sol = None
     node_counter = 0
 
-    while queue and len(tree_nodes) < 15:
-        curr_A, curr_signs, curr_b, parent_id, node_name, status, sol, z_val = queue.pop(0)
+    while queue and len(tree_nodes) < 20:
+        curr_A, curr_signs, curr_b, parent_id, node_name, status, sol, z_val, strips = queue.pop(0)
         node_id = f"node_{node_counter}"
         node_counter += 1
 
@@ -201,7 +216,7 @@ def run_recursive_branch_and_bound(obj_type, c, A, signs, b):
 
         tree_nodes.append({
             "id": node_id, "name": node_name, "status": status, "sol": sol, "z": z_val, 
-            "is_integer": is_integer, "parent": parent_id
+            "is_integer": is_integer, "parent": parent_id, "strips": strips
         })
 
         if status == "Optimal":
@@ -213,28 +228,26 @@ def run_recursive_branch_and_bound(obj_type, c, A, signs, b):
                     best_integer_z = z_val
                     best_integer_sol = sol
             else:
-                # Branch further!
                 val = sol[fractional_var]
                 floor_v = int(np.floor(val))
                 ceil_v = int(np.ceil(val))
+                new_strip = (fractional_var, floor_v, ceil_v)
 
-                # Left branch (x_k <= floor)
-                row_le = np.zeros(len(c))
-                row_le[fractional_var] = 1.0
+                # Left branch
+                row_le = np.zeros(len(c)); row_le[fractional_var] = 1.0
                 next_A1 = np.vstack([curr_A, row_le])
                 next_s1 = curr_signs + ["<="]
                 next_b1 = np.append(curr_b, floor_v)
                 st1, sol1, z1, _, _ = solve_simplex_big_m(obj_type, c, next_A1, next_s1, next_b1)
-                queue.append((next_A1, next_s1, next_b1, node_id, f"P_{node_counter} (x{fractional_var+1} ≤ {floor_v})", st1, sol1, z1))
+                queue.append((next_A1, next_s1, next_b1, node_id, f"P_{node_counter} (x{fractional_var+1} ≤ {floor_v})", st1, sol1, z1, strips + [new_strip]))
 
-                # Right branch (x_k >= ceil)
-                row_ge = np.zeros(len(c))
-                row_ge[fractional_var] = 1.0
+                # Right branch
+                row_ge = np.zeros(len(c)); row_ge[fractional_var] = 1.0
                 next_A2 = np.vstack([curr_A, row_ge])
                 next_s2 = curr_signs + [">="]
                 next_b2 = np.append(curr_b, ceil_v)
                 st2, sol2, z2, _, _ = solve_simplex_big_m(obj_type, c, next_A2, next_s2, next_b2)
-                queue.append((next_A2, next_s2, next_b2, node_id, f"P_{node_counter+1} (x{fractional_var+1} ≥ {ceil_v})", st2, sol2, z2))
+                queue.append((next_A2, next_s2, next_b2, node_id, f"P_{node_counter+1} (x{fractional_var+1} ≥ {ceil_v})", st2, sol2, z2, strips + [new_strip]))
 
     return tree_nodes, best_integer_z if best_integer_z != -1e18 else None, best_integer_sol
 
@@ -253,8 +266,8 @@ if st.session_state.selected_problem is None:
     st.write("")
     col4, col5, col6 = st.columns(3, gap="large")
     with col4: st.button("✂️ Gomory Fractional Cut", on_click=select_problem, args=("Gomory Fractional Cut",))
-    with col5: st.button("🌐 Network & TSP Solver", on_click=select_problem, args=("Network & TSP Solver",))
-    with col6: st.button("🗺️ Advanced TSP Studio", on_click=select_problem, args=("Advanced TSP Studio",))
+    with col5: st.button("🌐 Network Shortest Path (Stages & DP)", on_click=select_problem, args=("Network Shortest Path",))
+    with col6: st.button("🗺️ Travelling Salesman Problem", on_click=select_problem, args=("Travelling Salesman Problem",))
 
 # ==========================================
 # VIEW 2: DEDICATED PROBLEM WORKSPACE
@@ -272,49 +285,31 @@ else:
     st.divider()
 
     # ------------------------------------------
-    # 1. SIMPLEX METHOD
+    # 1. SIMPLEX METHOD (With Special Case Highlights)
     # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
         cfg1, cfg2, cfg3 = st.columns(3)
-        with cfg1:
-            st.markdown("**Objective Goal**")
-            obj_type = st.selectbox("Objective Goal", ["Maximize", "Minimize"], label_visibility="collapsed")
-        with cfg2:
-            st.markdown("**Number of Objective Variables**")
-            num_vars = st.number_input("Variables count", min_value=1, max_value=10, value=2, step=1, label_visibility="collapsed")
-        with cfg3:
-            st.markdown("**Number of Constraints**")
-            num_cons = st.number_input("Constraints count", min_value=1, max_value=15, value=2, step=1, label_visibility="collapsed")
+        with cfg1: obj_type = st.selectbox("Objective Goal", ["Maximize", "Minimize"])
+        with cfg2: num_vars = st.number_input("Variables count", min_value=1, max_value=10, value=2, step=1)
+        with cfg3: num_cons = st.number_input("Constraints count", min_value=1, max_value=15, value=2, step=1)
 
-        st.markdown(f"### 📊 Objective Function Coefficients ($c_j$ for {int(num_vars)} variables):")
+        st.markdown(f"### 📊 Objective Function Coefficients ($c_j$):")
         obj_cols = st.columns(int(num_vars))
         c_vals = []
-        default_c = [1.0, 4.0, 3.0, 2.0, 5.0]
         for j in range(int(num_vars)):
-            with obj_cols[j]:
-                st.markdown(f"**Coeff of $x_{j+1}$ ($c_{j+1}$)**")
-                c_vals.append(st.number_input(f"c{j+1}", value=default_c[j % len(default_c)], key=f"c_{j}", label_visibility="collapsed"))
+            with obj_cols[j]: c_vals.append(st.number_input(f"c{j+1}", value=1.0, key=f"c_{j}"))
 
-        st.markdown(f"### ⛓️ Constraints Setup ({int(num_cons)} constraints):")
+        st.markdown(f"### ⛓️ Constraints Setup:")
         A_rows, signs, b_vals = [], [], []
-        default_A = [[2.0, 4.0], [5.0, 3.0], [1.0, 1.0]]
-        default_b = [7.0, 15.0, 6.0]
-
         for i in range(int(num_cons)):
             st.markdown(f"**Constraint {i+1}:**")
             row_cols = st.columns(int(num_vars) + 2)
             row_a = []
             for j in range(int(num_vars)):
-                with row_cols[j]:
-                    st.caption(f"$x_{j+1}$ coeff")
-                    row_a.append(st.number_input(f"a_{i}_{j}", value=default_A[i][j] if i < 3 and j < 2 else 1.0, key=f"a_{i}_{j}", label_visibility="collapsed"))
-            with row_cols[int(num_vars)]:
-                st.caption("Inequality")
-                signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"sign_{i}", label_visibility="collapsed"))
-            with row_cols[int(num_vars) + 1]:
-                st.caption("RHS ($b_" + str(i+1) + "$)")
-                b_vals.append(st.number_input(f"b_{i}", value=default_b[i] if i < 3 else 10.0, key=f"b_{i}", label_visibility="collapsed"))
+                with row_cols[j]: row_a.append(st.number_input(f"a_{i}_{j}", value=1.0, key=f"a_{i}_{j}"))
+            with row_cols[int(num_vars)]: signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"sign_{i}"))
+            with row_cols[int(num_vars) + 1]: b_vals.append(st.number_input(f"b_{i}", value=10.0, key=f"b_{i}"))
             A_rows.append(row_a)
 
         status, sol, final_z, iterations, flags = solve_simplex_big_m(
@@ -322,9 +317,13 @@ else:
         )
 
         st.divider()
-        st.markdown("### 🔍 Solution Status & Special Case Flags")
+        st.markdown("### 🔍 Solution Status & Special Case Highlights")
         if flags:
-            for f in flags: st.warning(f"⚠️ **Special Case Flagged:** {f}")
+            for f in flags:
+                if "Infeasible" in f: st.error(f"🚩 **Infeasibility Highlight:** {f}")
+                elif "Unbounded" in f: st.error(f"🚩 **Unboundedness Highlight:** {f}")
+                elif "Degeneracy" in f: st.warning(f"⚠️ **Degeneracy Highlight:** {f}")
+                else: st.info(f"💡 **Alternative Optima Highlight:** {f}")
         else:
             st.success("✅ **Unique Optimal Solution**")
 
@@ -343,41 +342,32 @@ else:
     # ------------------------------------------
     elif problem == "Dual Simplex Method":
         st.markdown("### ⚙️ Dual Simplex Configuration")
-        col1, col2 = st.columns([1, 2], gap="large")
-        with col1:
-            rhs1 = st.number_input("Constraint 1 RHS", value=-4.0)
-            rhs2 = st.number_input("Constraint 2 RHS", value=-6.0)
-            step = st.button("Run Pivot Step")
-        with col2:
+        rhs1 = st.number_input("Constraint 1 RHS", value=-4.0)
+        rhs2 = st.number_input("Constraint 2 RHS", value=-6.0)
+        if st.button("Run Pivot Step"):
             tableau = np.array([[-3.0, -4.0, 0.0, 0.0, 0.0], [-1.0, -2.0, 1.0, 0.0, rhs1], [-2.0, -1.0, 0.0, 1.0, rhs2]])
             st.dataframe(tableau, use_container_width=True)
-            if step:
-                st.success(f"Leaving Variable selected: **Row {'1' if rhs1 < rhs2 else '2'}** (Most negative RHS).")
+            st.success(f"Leaving Variable selected: **Row {'1' if rhs1 < rhs2 else '2'}** (Most negative RHS).")
 
     # ------------------------------------------
-    # 3. BRANCH AND BOUND (Fully Recursive ILP Search)
+    # 3. BRANCH AND BOUND (With Recursive Strip Deletion Graphs)
     # ------------------------------------------
     elif problem == "Branch and Bound":
         st.markdown("### ⚙️ Step 1: Problem Dimensions")
         dim1, dim2, dim3 = st.columns(3)
         with dim1:
-            st.markdown("**Objective Goal**")
-            bb_obj = st.selectbox("BB Goal", ["Maximize", "Minimize"], label_visibility="collapsed")
+            bb_obj = st.selectbox("BB Goal", ["Maximize", "Minimize"])
         with dim2:
-            st.markdown("**Number of Objective Variables**")
-            bb_vars = st.number_input("BB Vars", min_value=2, max_value=5, value=2, step=1, label_visibility="collapsed")
+            bb_vars = st.number_input("BB Vars", min_value=2, max_value=5, value=2, step=1)
         with dim3:
-            st.markdown("**Number of Constraints**")
-            bb_cons = st.number_input("BB Cons", min_value=1, max_value=10, value=2, step=1, label_visibility="collapsed")
+            bb_cons = st.number_input("BB Cons", min_value=1, max_value=10, value=2, step=1)
 
         st.markdown("### 📊 Step 2: Enter Objective Function Coefficients ($c_j$)")
         obj_cols = st.columns(int(bb_vars))
         bb_c = []
-        default_bbc = [1.0, 4.0, 3.0, 2.0, 5.0]
         for j in range(int(bb_vars)):
             with obj_cols[j]:
-                st.markdown(f"**Coefficient of $x_{j+1}$**")
-                bb_c.append(st.number_input(f"bb_c_{j}", value=default_bbc[j % len(default_bbc)], key=f"bb_c_{j}", label_visibility="collapsed"))
+                bb_c.append(st.number_input(f"bb_c_{j}", value=1.0 if j==0 else 4.0, key=f"bb_c_{j}"))
 
         st.markdown(f"### ⛓️ Step 3: Enter Constraints ({int(bb_cons)} constraints)")
         bb_A, bb_signs, bb_b = [], [], []
@@ -388,12 +378,9 @@ else:
             r_cols = st.columns(int(bb_vars) + 2)
             row_a = []
             for j in range(int(bb_vars)):
-                with r_cols[j]:
-                    row_a.append(st.number_input(f"bb_a_{i}_{j}", value=default_bbA[i][j] if i < 3 and j < 2 else 1.0, key=f"bb_a_{i}_{j}", label_visibility="collapsed"))
-            with r_cols[int(bb_vars)]:
-                bb_signs.append(st.selectbox(f"bb_s_{i}", ["<=", ">=", "="], key=f"bb_s_{i}", label_visibility="collapsed"))
-            with r_cols[int(bb_vars) + 1]:
-                bb_b.append(st.number_input(f"bb_b_{i}", value=default_bbb[i] if i < 3 else 10.0, key=f"bb_b_{i}", label_visibility="collapsed"))
+                with r_cols[j]: row_a.append(st.number_input(f"bb_a_{i}_{j}", value=default_bbA[i][j] if i < 3 and j < 2 else 1.0, key=f"bb_a_{i}_{j}"))
+            with r_cols[int(bb_vars)]: bb_signs.append(st.selectbox(f"bb_s_{i}", ["<=", ">=", "="], key=f"bb_s_{i}"))
+            with r_cols[int(bb_vars) + 1]: bb_b.append(st.number_input(f"bb_b_{i}", value=default_bbb[i] if i < 3 else 10.0, key=f"bb_b_{i}"))
             bb_A.append(row_a)
 
         run_bb = st.button("Run Full Recursive Branch & Bound ILP Tree")
@@ -413,7 +400,7 @@ else:
                     st.metric(label="Optimal Integer Objective Z*", value=f"{best_z:.2f}")
                     st.markdown(f"**Optimal Variables:** {sol_str}")
                 else:
-                    st.error("No integer feasible solution found across explored branches.")
+                    st.error("No integer feasible solution found.")
 
             with col_res2:
                 st.markdown("### 🌳 Full Recursive Branch & Bound Decision Tree")
@@ -424,200 +411,22 @@ else:
                 for n in nodes:
                     color = "#10b981" if n["is_integer"] else ("#6366f1" if n["status"] == "Optimal" else "#ef4444")
                     sol_txt = ", ".join([f"x{j+1}={n['sol'][j]:.2f}" for j in range(int(bb_vars))]) if n['status'] == "Optimal" else n['status']
-                    label_text = f"{n['name']}\nZ = {n['z']:.2f}\n{sol_txt}"
-                    dot.node(n["id"], label=label_text, fillcolor=color)
+                    dot.node(n["id"], label=f"{n['name']}\nZ = {n['z']:.2f}\n{sol_txt}", fillcolor=color)
                     if n["parent"] != "Root":
                         dot.edge(n["parent"], n["id"], color="white")
 
                 st.graphviz_chart(dot, use_container_width=True)
 
-    # ------------------------------------------
-    # 4. GOMORY FRACTIONAL CUT
-    # ------------------------------------------
-    elif problem == "Gomory Fractional Cut":
-        st.markdown("### ⚙️ Gomory Fractional Cut")
-        col1, col2 = st.columns([1, 2], gap="large")
-        with col1:
-            cut_offset = st.slider("Cut Offset", 2.5, 4.0, 3.3, 0.1)
-        with col2:
-            x1 = np.linspace(0, 5, 100)
-            y1 = 4.2 - 0.8 * x1
-            cut = cut_offset - 0.7 * x1
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x1, y=y1, mode='lines', name='LP Boundary', line=dict(color='#38bdf8', width=3)))
-            fig.add_trace(go.Scatter(x=x1, y=cut, mode='lines', name='Gomory Cut', line=dict(color='#f43f5e', width=3, dash='dash')))
-            fig.update_layout(template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # ------------------------------------------
-    # 5. UNIFIED NETWORK & TSP SOLVER (Exact Notebook Multi-Tier Tree for Node 2, 3, AND 4)
-    # ------------------------------------------
-    elif problem == "Network & TSP Solver":
-        st.markdown("### 🌐 Unified Network & Travelling Salesman Solver")
-        st.markdown("Enter your distance/cost matrix below. Use `-` or `999` for missing edges.")
-
-        nc1, nc2, nc3 = st.columns(3)
-        with nc1:
-            n_nodes = st.number_input("Number of Nodes/Cities", min_value=3, max_value=8, value=4, step=1)
-        with nc2:
-            start_node = st.selectbox("Start Node", [chr(65 + i) for i in range(int(n_nodes))], index=0)
-        with nc3:
-            end_node = st.selectbox("End Node", [chr(65 + i) for i in range(int(n_nodes))], index=0)
-
-        node_names = [chr(65 + i) for i in range(int(n_nodes))]
-        base_arr = np.array([
-            [999, 10, 15, 20],
-            [5, 999, 9, 10],
-            [6, 13, 999, 12],
-            [8, 8, 9, 999]
-        ], dtype=float)
-        
-        n_int = int(n_nodes)
-        sub_arr = base_arr[:n_int, :n_int] if n_int <= 4 else np.pad(base_arr, ((0, max(0, n_int-4)), (0, max(0, n_int-4))), constant_values=999)
-        for d in range(n_int): sub_arr[d, d] = 999
-
-        default_matrix = pd.DataFrame(sub_arr, columns=node_names[:n_int], index=node_names[:n_int])
-
-        st.markdown("#### 📊 Adjacency / Distance Cost Matrix:")
-        user_matrix = st.data_editor(default_matrix, use_container_width=True)
-        run_solver = st.button("Compute Optimal Route & Notebook Tree")
-
-        if run_solver:
+            # Recursive Strip Deletion Visualizations for each node
             st.divider()
-            matrix_data = np.full((n_int, n_int), 999.0)
-            for r in range(n_int):
-                for c in range(n_int):
-                    val = user_matrix.iloc[r, c]
-                    try:
-                        matrix_data[r, c] = float(val)
-                    except:
-                        matrix_data[r, c] = 999.0
-
-            is_tsp = (start_node == end_node)
-
-            if is_tsp:
-                st.markdown("### 🗺️ Travelling Salesman Problem — Exact Notebook State Tree Diagram")
-                col_res1, col_res2 = st.columns([1, 1.3], gap="large")
-                
-                with col_res1:
-                    st.success(f"🎯 **Optimal Closed Tour Found (Start/End: {start_node}):**")
-                    route_str = f"{start_node} → B → D → C → {start_node}"
-                    st.markdown(f"**Route:** {route_str}")
-                    st.metric(label="Optimal Total Cost", value="35 units")
-                    st.markdown("""
-                    **Notebook Breakdown (Fully Mapped):**
-                    * **Root State (Node 1):** $\min \{ 10+25, 15+25, 20+23 \} = 35$[span_1](start_span)[span_1](end_span)
-                    * **Node 2 Branch:** $\min \{ 9+20, 10+15 \} = 25$[span_2](start_span)[span_2](end_span)
-                    * **Node 3 Branch:** $\min \{ 13+18, 12+13 \} = 23$[span_3](start_span)[span_3](end_span)
-                    * **Node 4 Branch:** $\min \{ 8+15, 9+18 \} = 23$[span_4](start_span)[span_4](end_span)
-                    """)
-
-                with col_res2:
-                    st.markdown("### 🌳 Exact Notebook-Style State Tree Diagram (Nodes 2, 3, & 4 Fully Branched)")
-                    dot = graphviz.Digraph()
-                    dot.attr(bgcolor='transparent', rankdir='TB')
-                    dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true')
+            st.markdown("### 📉 Cumulative Strip Deletion Graphs Across Recursive Branches")
+            for n in nodes:
+                if n["strips"]:
+                    st.markdown(f"#### Sub-Problem: `{n['name']}` (Cumulative Deleted Strips)")
+                    fig = go.Figure()
+                    max_b = max(bb_b) * 1.3 if bb_b else 10.0
                     
-                    # Root
-                    dot.node('root', label='Start (1)\nmin{ 10+25, 15+25, 20+23 }\n= 35 (Optimal Cost)', fillcolor='#ef4444', shape='doublecircle')
-                    
-                    # Middle Tier (Nodes 2, 3, 4)
-                    dot.node('n2', label='Node (2)\nmin{ 9+20, 10+15 }\n= 25', fillcolor='#10b981')
-                    dot.node('n3', label='Node (3)\nmin{ 13+18, 12+13 }\n= 23', fillcolor='#f59e0b')
-                    dot.node('n4', label='Node (4)\nmin{ 8+15, 9+18 }\n= 23', fillcolor='#6366f1')
-                    
-                    dot.edge('root', 'n2', label=' 1→2 (10)', color='white', fontcolor='white')
-                    dot.edge('root', 'n3', label=' 1→3 (15)', color='white', fontcolor='white')
-                    dot.edge('root', 'n4', label=' 1→4 (20)', color='white', fontcolor='white')
-                    
-                    # Bottom Summation Tier for Node 2
-                    dot.node('n2_3', label='Node (3)\n12 + 8 = 20', fillcolor='#334155')
-                    dot.node('n2_4', label='Node (4)\n9 + 6 = 15', fillcolor='#334155')
-                    dot.edge('n2', 'n2_3', label=' 2→3 (12)', color='white', fontcolor='white')
-                    dot.edge('n2', 'n2_4', label=' 2→4 (9)', color='white', fontcolor='white')
-                    
-                    # Bottom Summation Tier for Node 3
-                    dot.node('n3_2', label='Node (2)\n13 + 5 = 18', fillcolor='#334155')
-                    dot.node('n3_4', label='Node (4)\n8 + 5 = 13', fillcolor='#334155')
-                    dot.edge('n3', 'n3_2', label=' 3→2 (13)', color='white', fontcolor='white')
-                    dot.edge('n3', 'n3_4', label=' 3→4 (8)', color='white', fontcolor='white')
-
-                    # Bottom Summation Tier for Node 4 (Fully Added!)
-                    dot.node('n4_2', label='Node (2)\n9 + 5 = 14', fillcolor='#334155')
-                    dot.node('n4_3', label='Node (3)\n8 + 6 = 14', fillcolor='#334155')
-                    dot.edge('n4', 'n4_2', label=' 4→2 (9)', color='white', fontcolor='white')
-                    dot.edge('n4', 'n4_3', label=' 4→3 (8)', color='white', fontcolor='white')
-                    
-                    # Individual Base Weight Connections for Exact Notebook Match
-                    dot.node('base2', label='Base Node 2 = 5', fillcolor='#475569')
-                    dot.node('base3', label='Base Node 3 = 6', fillcolor='#475569')
-                    dot.node('base4', label='Base Node 4 = 8', fillcolor='#475569')
-
-                    dot.edge('n2_3', 'base3', color='white')
-                    dot.edge('n2_4', 'base4', color='white')
-                    dot.edge('n3_2', 'base2', color='white')
-                    dot.edge('n3_4', 'base4', color='white')
-                    dot.edge('n4_2', 'base2', color='white')
-                    dot.edge('n4_3', 'base3', color='white')
-                    
-                    st.graphviz_chart(dot, use_container_width=True)
-            else:
-                st.markdown(f"### 🌐 Network Shortest Path Problem (From {start_node} to {end_node})")
-                col_net1, col_net2 = st.columns([1, 1.3], gap="large")
-
-                with col_net1:
-                    st.success(f"🎯 **Optimal Path Found:** {start_node} → B → D → {end_node}")
-                    st.metric(label="Minimum Path Cost", value="24 units")
-                    st.markdown("""
-                    **Network Stage Deletion & Shortest Path:**
-                    * Constructed from adjacency matrix with missing edges treated as infinity (`-`).
-                    * Highlighted optimal path minimizes cumulative edge weights across network stages.
-                    """)
-
-                with col_net2:
-                    st.markdown("### 📈 Constructed Network Graph")
-                    dot = graphviz.Digraph()
-                    dot.attr(bgcolor='transparent', rankdir='LR')
-                    dot.node_attr.update(style='filled', fillcolor='#6366f1', fontcolor='white', shape='circle')
-                    
-                    for r in range(n_int):
-                        for c in range(n_int):
-                            w = matrix_data[r, c]
-                            if w < 900 and r != c:
-                                u, v = node_names[r], node_names[c]
-                                is_opt = (u == start_node and v == 'B') or (u == 'B' and v == 'D')
-                                dot.edge(u, v, label=str(int(w)), color='#10b981' if is_opt else 'white', fontcolor='white', penwidth='3' if is_opt else '1')
-                    st.graphviz_chart(dot, use_container_width=True)
-
-    # ------------------------------------------
-    # 6. ADVANCED TSP STUDIO
-    # ------------------------------------------
-    elif problem == "Advanced TSP Studio":
-        st.markdown("### 🗺️ Advanced TSP Tour Studio")
-        n_cities = st.slider("Number of Cities", 4, 12, 7)
-        seed = st.number_input("Layout Seed", value=42, step=1)
-        
-        np.random.seed(int(seed))
-        coords = np.random.rand(n_cities, 2) * 100
-        unvisited = list(range(1, n_cities))
-        tour = [0]
-        while unvisited:
-            last = tour[-1]
-            next_city = min(unvisited, key=lambda c: np.linalg.norm(coords[last] - coords[c]))
-            tour.append(next_city)
-            unvisited.remove(next_city)
-        tour.append(0)
-        
-        total_dist = sum(np.linalg.norm(coords[tour[i]] - coords[tour[i+1]]) for i in range(len(tour)-1))
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=coords[tour, 0], y=coords[tour, 1],
-            mode='lines+markers+text',
-            text=[f"City {i+1}" for i in tour],
-            textposition="top center",
-            marker=dict(size=14, color='#c084fc', line=dict(width=2, color='white')),
-            line=dict(color='#38bdf8', width=3)
-        ))
-        fig.update_layout(title=f"Optimal TSP Tour Distance: {total_dist:.2f} units", template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', showlegend=False, height=500)
-        st.plotly_chart(fig, use_container_width=True)
+                    # Base feasible region preview
+                    x_grid = np.linspace(0, max_b, 100)
+                    y_grid = np.linspace(0, max_b, 100)
+                    X, Y = np.meshgrid(x_grid, y_grid)
