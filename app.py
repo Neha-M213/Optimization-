@@ -295,36 +295,53 @@ else:
         st.divider()
         st.markdown("### 📈 Feasible Region, Constraints & Corner Points Visualization")
         if int(num_vars) == 2:
-            max_bound = max(max(b_vals) * 1.4, 12.0)
-            x1_vals = np.linspace(0, max_bound, 300)
-            x2_vals = np.linspace(0, max_bound, 300)
+            max_rhs = max(b_vals) if b_vals else 10.0
+            max_bound = max(max_rhs * 1.5, 10.0)
+            x1_vals = np.linspace(0, max_bound, 200)
+            x2_vals = np.linspace(0, max_bound, 200)
             X1, X2 = np.meshgrid(x1_vals, x2_vals)
-            Z_space = c_vals[0] * X1 + c_vals[1] * X2
-            feasible = (X1 >= 0) & (X2 >= 0)
             
+            feasible = (X1 >= 0) & (X2 >= 0)
             for i in range(int(num_cons)):
                 lhs = A_rows[i][0] * X1 + A_rows[i][1] * X2
-                if signs[i] == "<=": feasible &= (lhs <= b_vals[i] + 1e-5)
-                elif signs[i] == ">=": feasible &= (lhs >= b_vals[i] - 1e-5)
-                else: feasible &= np.isclose(lhs, b_vals[i], atol=0.15)
+                if signs[i] == "<=": feasible &= (lhs <= b_vals[i] + 1e-4)
+                elif signs[i] == ">=": feasible &= (lhs >= b_vals[i] - 1e-4)
+                else: feasible &= np.isclose(lhs, b_vals[i], atol=0.2)
+            
+            Z_space = c_vals[0] * X1 + c_vals[1] * X2
             Z_space[~feasible] = np.nan
             
             fig = go.Figure()
             colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
             
+            # Plot constraint lines
             for i in range(int(num_cons)):
                 a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
                 if abs(a2) > 1e-6:
                     y_line = (b_i - a1*x1_vals)/a2
-                    valid_mask = (y_line >= 0) & (y_line <= max_bound)
-                    fig.add_trace(go.Scatter(
-                        x=x1_vals[valid_mask], y=y_line[valid_mask],
-                        mode='lines', name=f'Constraint {i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}',
-                        line=dict(color=colors[i%len(colors)], width=3)
-                    ))
+                    mask = (y_line >= 0) & (y_line <= max_bound)
+                    if np.any(mask):
+                        fig.add_trace(go.Scatter(
+                            x=x1_vals[mask], y=y_line[mask], mode='lines',
+                            name=f'C{i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}',
+                            line=dict(color=colors[i%len(colors)], width=3)
+                        ))
+                elif abs(a1) > 1e-6:
+                    x_val = b_i / a1
+                    if 0 <= x_val <= max_bound:
+                        fig.add_trace(go.Scatter(
+                            x=[x_val, x_val], y=[0, max_bound], mode='lines',
+                            name=f'C{i+1}: {a1}x₁ {signs[i]} {b_i}',
+                            line=dict(color=colors[i%len(colors)], width=3)
+                        ))
 
-            fig.add_trace(go.Contour(x=x1_vals, y=x2_vals, z=Z_space, colorscale='Plasma', showscale=True, opacity=0.8))
+            # Feasible region contour shading
+            fig.add_trace(go.Contour(
+                x=x1_vals, y=x2_vals, z=Z_space,
+                colorscale='Plasma', showscale=True, opacity=0.75, name="Feasible Region"
+            ))
             
+            # Calculate corner points
             vertices = [(0.0, 0.0)]
             for i in range(int(num_cons)):
                 a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
@@ -363,16 +380,16 @@ else:
                     x=vx, y=vy, mode='markers+text',
                     text=[f"({p[0]}, {p[1]})" for p in valid_verts],
                     textposition="top right",
-                    marker=dict(size=11, color='#ffffff', line=dict(width=2, color='#38bdf8')),
-                    name="Corner Points (Vertices)"
+                    marker=dict(size=12, color='#ffffff', line=dict(width=2, color='#38bdf8')),
+                    name="Corner Points"
                 ))
 
             if status == "Optimal":
                 fig.add_trace(go.Scatter(
                     x=[sol[0]], y=[sol[1]], mode='markers+text',
                     text=[f"Optimal Z*={final_z:.1f}"], textposition="bottom left",
-                    marker=dict(size=15, color='#10b981', symbol='star', line=dict(width=2, color='white')),
-                    name="Optimal Solution"
+                    marker=dict(size=16, color='#10b981', symbol='star', line=dict(width=2, color='white')),
+                    name="Optimal Vertex"
                 ))
 
             fig.update_layout(
