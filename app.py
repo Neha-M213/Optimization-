@@ -362,7 +362,7 @@ else:
             st.success(f"Leaving Variable selected: **Row {'1' if rhs1 < rhs2 else '2'}** (Most negative RHS).")
 
     # ------------------------------------------
-    # 3. BRANCH AND BOUND (Sequential LP2, LP3, LP4... Graphs & Diagrams)
+    # 3. BRANCH AND BOUND (Decision Tree + LPP Sub-Problem Diagrams for LP2, LP3, LP4, LP5)
     # ------------------------------------------
     elif problem == "Branch and Bound":
         st.markdown("### ⚙️ Step 1: Problem Dimensions")
@@ -391,7 +391,7 @@ else:
             with r_cols[int(bb_vars) + 1]: bb_b.append(st.number_input(f"bb_b_{i}", value=default_bbb[i] if i < 3 else 10.0, key=f"bb_b_{i}"))
             bb_A.append(row_a)
 
-        run_bb = st.button("Run Full Recursive Branch & Bound ILP Tree")
+        run_bb = st.button("Run Full Branch & Bound Tree & LPP Diagrams")
 
         if run_bb:
             st.divider()
@@ -406,54 +406,108 @@ else:
                 f_v = int(np.floor(val))
                 c_v = int(np.ceil(val))
 
-                st.markdown(f"### 📉 Strip Deletion & Sequential LPP Generation for Variable $x_{v_idx+1}$")
-                
+                # Solve LP2 & LP3
                 r_le = np.zeros(int(bb_vars)); r_le[v_idx] = 1.0
                 st2, sol2, z2, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le]), bb_signs + ["<="], np.append(bb_b, f_v))
-                st.success(f"**LP2 (Add $x_{v_idx+1} \\le {f_v}$):** Z = {z2:.2f} | Status: {st2}")
-
+                
                 r_ge = np.zeros(int(bb_vars)); r_ge[v_idx] = 1.0
                 st3, sol3, z3, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_ge]), bb_signs + [">="], np.append(bb_b, c_v))
-                st.info(f"**LP3 (Add $x_{v_idx+1} \\ge {c_v}$):** Z = {z3:.2f} | Status: {st3}")
 
-                fig2 = go.Figure()
-                max_b = max(bb_b) * 1.3
-                fig2.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(99, 102, 241, 0.20)", line=dict(color="#818cf8", width=2), name="LP1 Region"))
-                if v_idx == 0:
-                    fig2.add_trace(go.Scatter(x=[f_v, c_v, c_v, f_v, f_v], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.40)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Deleted Strip LP2/LP3 ({f_v} < x₁ < {c_v})"))
-                else:
-                    fig2.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[f_v, f_v, c_v, c_v, f_v], fill="toself", fillcolor="rgba(244, 63, 94, 0.40)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Deleted Strip LP2/LP3 ({f_v} < x₂ < {c_v})"))
-                fig2.update_layout(title="Sequential Diagram 1: LP2 & LP3 Strip Deletion", xaxis_title="x₁", yaxis_title="x₂", template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=380)
-                st.plotly_chart(fig2, use_container_width=True)
-
+                # Check LP4 & LP5 if LP2 is fractional
+                st4, z4, sol4, st5, z5, sol5 = "Infeasible", 0, None, "Infeasible", 0, None
+                frac_v2 = []
                 if st2 == "Optimal" and not all(np.isclose(sol2[j], round(sol2[j]), atol=1e-4) for j in range(int(bb_vars))):
-                    frac_v2 = [j for j in range(int(bb_vars)) if not np.isclose(sol2[j], round(sol2[j]), atol=1e-4)][0]
-                    val2 = sol2[frac_v2]
-                    f_v2 = int(np.floor(val2))
-                    c_v2 = int(np.ceil(val2))
+                    frac_v2 = [j for j in range(int(bb_vars)) if not np.isclose(sol2[j], round(sol2[j]), atol=1e-4)]
+                    if frac_v2:
+                        fv2_idx = frac_v2[0]
+                        val2 = sol2[fv2_idx]
+                        f_v2 = int(np.floor(val2))
+                        c_v2 = int(np.ceil(val2))
 
-                    st.markdown(f"### 📉 Further Branching: Generating LP4 and LP5 from LP2")
-                    r_le2 = np.zeros(int(bb_vars)); r_le2[frac_v2] = 1.0
-                    st4, sol4, z4, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le, r_le2]), bb_signs + ["<=", "<="], np.append(np.append(bb_b, f_v), f_v2))
-                    st.success(f"**LP4 (Add $x_{frac_v2+1} \\le {f_v2}$):** Z = {z4:.2f} | Status: {st4}")
+                        r_le2 = np.zeros(int(bb_vars)); r_le2[fv2_idx] = 1.0
+                        st4, sol4, z4, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le, r_le2]), bb_signs + ["<=", "<="], np.append(np.append(bb_b, f_v), f_v2))
 
-                    r_ge2 = np.zeros(int(bb_vars)); r_ge2[frac_v2] = 1.0
-                    st5, sol5, z5, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le, r_ge2]), bb_signs + ["<=", ">="], np.append(np.append(bb_b, f_v), c_v2))
-                    st.info(f"**LP5 (Add $x_{frac_v2+1} \\ge {c_v2}$):** Z = {z5:.2f} | Status: {st5}")
+                        r_ge2 = np.zeros(int(bb_vars)); r_ge2[fv2_idx] = 1.0
+                        st5, sol5, z5, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le, r_ge2]), bb_signs + ["<=", ">="], np.append(np.append(bb_b, f_v), c_v2))
 
-                    fig3 = go.Figure()
-                    fig3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(99, 102, 241, 0.20)", line=dict(color="#818cf8", width=2), name="LP1 Region"))
+                # --- 🌳 BRANCH & BOUND DECISION TREE DIAGRAM ---
+                st.markdown("### 🌳 Branch & Bound Decision Tree Diagram")
+                dot = graphviz.Digraph()
+                dot.attr(bgcolor="transparent", rankdir="TB")
+                dot.node_attr.update(style="filled", fontcolor="white", shape="box", rounded="true")
+
+                dot.node("lp1", label=f"LP1 (Root)\nZ = {root_z:.2f}\nx{v_idx+1} = {val:.2f} (Frac)", fillcolor="#6366f1")
+                dot.node("lp2", label=f"LP2 (x{v_idx+1} ≤ {f_v})\nZ = {z2:.2f}\nStatus: {st2}", fillcolor="#10b981" if st2=="Optimal" else "#ef4444")
+                dot.node("lp3", label=f"LP3 (x{v_idx+1} ≥ {c_v})\nZ = {z3:.2f}\nStatus: {st3}", fillcolor="#10b981" if st3=="Optimal" else "#ef4444")
+                
+                dot.edge("lp1", "lp2", label=f"x{v_idx+1} ≤ {f_v}", color="white", fontcolor="white")
+                dot.edge("lp1", "lp3", label=f"x{v_idx+1} ≥ {c_v}", color="white", fontcolor="white")
+
+                if frac_v2:
+                    dot.node("lp4", label=f"LP4 (x{fv2_idx+1} ≤ {f_v2})\nZ = {z4:.2f}\nStatus: {st4}", fillcolor="#10b981" if st4=="Optimal" else "#ef4444")
+                    dot.node("lp5", label=f"LP5 (x{fv2_idx+1} ≥ {c_v2})\nZ = {z5:.2f}\nStatus: {st5}", fillcolor="#10b981" if st5=="Optimal" else "#ef4444")
+                    dot.edge("lp2", "lp4", label=f"x{fv2_idx+1} ≤ {f_v2}", color="white", fontcolor="white")
+                    dot.edge("lp2", "lp5", label=f"x{fv2_idx+1} ≥ {c_v2}", color="white", fontcolor="white")
+
+                st.graphviz_chart(dot, use_container_width=True)
+
+                # --- NEWLY CONSTRUCTED LPP SUB-PROBLEM DIAGRAMS (LP2 & LP3) ---
+                st.markdown("### 📉 Newly Constructed LPP Sub-Problems: $LP_2$ and $LP_3$")
+                col_lp2, col_lp3 = st.columns(2)
+                max_b = max(bb_b) * 1.3
+
+                with col_lp2:
+                    st.markdown(f"**$LP_2$ Sub-Problem** ($x_{v_idx+1} \\le {f_v}$)")
+                    st.metric(label="Objective Z₂", value=f"{z2:.2f}", delta=st2)
+                    fig_lp2 = go.Figure()
+                    fig_lp2.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(16, 185, 129, 0.25)", line=dict(color="#10b981", width=2), name="LP2 Feasible Region"))
                     if v_idx == 0:
-                        fig3.add_trace(go.Scatter(x=[f_v, c_v, c_v, f_v, f_v], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.30)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Strip 1 ({f_v}<x₁<{c_v})"))
+                        fig_lp2.add_shape(type="rect", x0=f_v, y0=0, x1=max_b, y1=max_b, fillcolor="rgba(239, 68, 68, 0.35)", line=dict(width=0))
                     else:
-                        fig3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[f_v, f_v, c_v, c_v, f_v], fill="toself", fillcolor="rgba(244, 63, 94, 0.30)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Strip 1 ({f_v}<x₂<{c_v})"))
-                    if frac_v2 == 0:
-                        fig3.add_trace(go.Scatter(x=[f_v2, c_v2, c_v2, f_v2, f_v2], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.50)", line=dict(color="#fb7185", width=2, dash="dash"), name=f"Strip 2 LP4/LP5 ({f_v2}<x₁<{c_v2})"))
-                    else:
-                        fig3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[f_v2, f_v2, c_v2, c_v2, f_v2], fill="toself", fillcolor="rgba(244, 63, 94, 0.50)", line=dict(color="#fb7185", width=2, dash="dash"), name=f"Strip 2 LP4/LP5 ({f_v2}<x₂<{c_v2})"))
+                        fig_lp2.add_shape(type="rect", x0=0, y0=f_v, x1=max_b, y1=max_b, fillcolor="rgba(239, 68, 68, 0.35)", line=dict(width=0))
+                    if st2 == "Optimal" and sol2 is not None:
+                        fig_lp2.add_trace(go.Scatter(x=[sol2[0]], y=[sol2[1]], mode="markers+text", text=[f"LP2 Sol ({sol2[0]:.2f},{sol2[1]:.2f})"], textposition="top right", marker=dict(size=12, color="#fbbf24")))
+                    fig_lp2.update_layout(xaxis_title="x₁", yaxis_title="x₂", xaxis=dict(range=[0, max_b]), yaxis=dict(range=[0, max_b]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=320, margin=dict(l=20, r=20, t=30, b=20))
+                    st.plotly_chart(fig_lp2, use_container_width=True)
 
-                    fig3.update_layout(title="Sequential Diagram 2: Cumulative Strip Deletion (LP4 & LP5)", xaxis_title="x₁", yaxis_title="x₂", template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=380)
-                    st.plotly_chart(fig3, use_container_width=True)
+                with col_lp3:
+                    st.markdown(f"**$LP_3$ Sub-Problem** ($x_{v_idx+1} \\ge {c_v}$)")
+                    st.metric(label="Objective Z₃", value=f"{z3:.2f}", delta=st3)
+                    fig_lp3 = go.Figure()
+                    fig_lp3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(245, 158, 11, 0.25)", line=dict(color="#f59e0b", width=2), name="LP3 Feasible Region"))
+                    if v_idx == 0:
+                        fig_lp3.add_shape(type="rect", x0=0, y0=0, x1=c_v, y1=max_b, fillcolor="rgba(239, 68, 68, 0.35)", line=dict(width=0))
+                    else:
+                        fig_lp3.add_shape(type="rect", x0=0, y0=0, x1=max_b, y1=c_v, fillcolor="rgba(239, 68, 68, 0.35)", line=dict(width=0))
+                    if st3 == "Optimal" and sol3 is not None:
+                        fig_lp3.add_trace(go.Scatter(x=[sol3[0]], y=[sol3[1]], mode="markers+text", text=[f"LP3 Sol ({sol3[0]:.2f},{sol3[1]:.2f})"], textposition="top right", marker=dict(size=12, color="#fbbf24")))
+                    fig_lp3.update_layout(xaxis_title="x₁", yaxis_title="x₂", xaxis=dict(range=[0, max_b]), yaxis=dict(range=[0, max_b]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=320, margin=dict(l=20, r=20, t=30, b=20))
+                    st.plotly_chart(fig_lp3, use_container_width=True)
+
+                # --- FURTHER SUB-PROBLEMS (LP4 & LP5) BELOW IF FRACTIONAL ---
+                if frac_v2:
+                    st.markdown(f"### 📉 Further Sub-Problems: $LP_4$ and $LP_5$ (Generated from $LP_2$)")
+                    col_lp4, col_lp5 = st.columns(2)
+
+                    with col_lp4:
+                        st.markdown(f"**$LP_4$ Sub-Problem** ($x_{fv2_idx+1} \\le {f_v2}$)")
+                        st.metric(label="Objective Z₄", value=f"{z4:.2f}", delta=st4)
+                        fig_lp4 = go.Figure()
+                        fig_lp4.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(99, 102, 241, 0.25)", line=dict(color="#6366f1", width=2), name="LP4 Feasible Region"))
+                        if st4 == "Optimal" and sol4 is not None:
+                            fig_lp4.add_trace(go.Scatter(x=[sol4[0]], y=[sol4[1]], mode="markers+text", text=[f"LP4 Sol ({sol4[0]:.2f},{sol4[1]:.2f})"], textposition="top right", marker=dict(size=12, color="#fbbf24")))
+                        fig_lp4.update_layout(xaxis_title="x₁", yaxis_title="x₂", xaxis=dict(range=[0, max_b]), yaxis=dict(range=[0, max_b]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=320, margin=dict(l=20, r=20, t=30, b=20))
+                        st.plotly_chart(fig_lp4, use_container_width=True)
+
+                    with col_lp5:
+                        st.markdown(f"**$LP_5$ Sub-Problem** ($x_{fv2_idx+1} \\ge {c_v2}$)")
+                        st.metric(label="Objective Z₅", value=f"{z5:.2f}", delta=st5)
+                        fig_lp5 = go.Figure()
+                        fig_lp5.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.25)", line=dict(color="#f43f5e", width=2), name="LP5 Feasible Region"))
+                        if st5 == "Optimal" and sol5 is not None:
+                            fig_lp5.add_trace(go.Scatter(x=[sol5[0]], y=[sol5[1]], mode="markers+text", text=[f"LP5 Sol ({sol5[0]:.2f},{sol5[1]:.2f})"], textposition="top right", marker=dict(size=12, color="#fbbf24")))
+                        fig_lp5.update_layout(xaxis_title="x₁", yaxis_title="x₂", xaxis=dict(range=[0, max_b]), yaxis=dict(range=[0, max_b]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=320, margin=dict(l=20, r=20, t=30, b=20))
+                        st.plotly_chart(fig_lp5, use_container_width=True)
 
     # ------------------------------------------
     # 4. GOMORY FRACTIONAL CUT
@@ -471,7 +525,7 @@ else:
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------------------------------
-    # 5. UNIFIED NETWORK & TSP SOLVER (Adjacency Matrix, Start/End & Full DP Tables)
+    # 5. UNIFIED NETWORK & TSP SOLVER
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Unified Network & Travelling Salesman Solver")
