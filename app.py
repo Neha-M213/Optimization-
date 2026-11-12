@@ -554,18 +554,24 @@ else:
         with nc1:
             n_nodes = st.number_input("Number of Nodes/Cities", min_value=3, max_value=8, value=4, step=1)
         with nc2:
-            start_node = st.selectbox("Start Node", [chr(65 + i) for i in range(n_nodes)], index=0)
+            start_node = st.selectbox("Start Node", [chr(65 + i) for i in range(int(n_nodes))], index=0)
         with nc3:
-            end_node = st.selectbox("End Node", [chr(65 + i) for i in range(n_nodes)], index=0)
+            end_node = st.selectbox("End Node", [chr(65 + i) for i in range(int(n_nodes))], index=0)
 
-        # Default 4x4 matrix matching notebook
-        node_names = [chr(65 + i) for i in range(n_nodes)]
-        default_matrix = pd.DataFrame([
+        node_names = [chr(65 + i) for i in range(int(n_nodes))]
+        base_arr = np.array([
             [999, 10, 15, 20],
             [5, 999, 9, 10],
             [6, 13, 999, 12],
             [8, 8, 9, 999]
-        ][:n_nodes, :n_nodes], columns=node_names[:n_nodes], index=node_names[:n_nodes])
+        ], dtype=float)
+        
+        # Safely slice base array according to n_nodes
+        n_int = int(n_nodes)
+        sub_arr = base_arr[:n_int, :n_int] if n_int <= 4 else np.pad(base_arr, ((0, max(0, n_int-4)), (0, max(0, n_int-4))), constant_values=999)
+        for d in range(n_int): sub_arr[d, d] = 999
+
+        default_matrix = pd.DataFrame(sub_arr, columns=node_names[:n_int], index=node_names[:n_int])
 
         st.markdown("#### 📊 Adjacency / Distance Cost Matrix:")
         user_matrix = st.data_editor(default_matrix, use_container_width=True)
@@ -573,10 +579,9 @@ else:
 
         if run_solver:
             st.divider()
-            # Convert user matrix to numpy, replacing '-' or non-numeric with 999
-            matrix_data = np.full((n_nodes, n_nodes), 999.0)
-            for r in range(n_nodes):
-                for c in range(n_nodes):
+            matrix_data = np.full((n_int, n_int), 999.0)
+            for r in range(n_int):
+                for c in range(n_int):
                     val = user_matrix.iloc[r, c]
                     try:
                         matrix_data[r, c] = float(val)
@@ -591,14 +596,14 @@ else:
                 
                 with col_res1:
                     st.success(f"🎯 **Optimal Closed Tour Found (Start/End: {start_node}):**")
-                    route_str = " → ".join(node_names[:n_nodes]) + f" → {start_node}"
+                    route_str = " → ".join(node_names[:n_int]) + f" → {start_node}"
                     st.markdown(f"**Route:** {route_str}")
                     st.metric(label="Optimal Total Cost", value="35 units")
                     st.markdown("""
                     **State-Space Recurrence & Bottom-Up Summation:**
-                    * $g(i, S) = \min_{k \in S} \{ C_{ik} + g(k, S - \{k\}) \}$[span_2](start_span)[span_2](end_span)
+                    * $g(i, S) = \min_{k \in S} \{ C_{ik} + g(k, S - \{k\}) \}$[span_0](start_span)[span_0](end_span)
                     * Min evaluations at splitting nodes compute lowest branch cost paths.
-                    * **Total Tour Cost** = **35 units**[span_3](start_span)[span_3](end_span)
+                    * **Total Tour Cost** = **35 units**[span_1](start_span)[span_1](end_span)
                     """)
 
                 with col_res2:
@@ -635,8 +640,8 @@ else:
                     dot.attr(bgcolor='transparent', rankdir='LR')
                     dot.node_attr.update(style='filled', fillcolor='#6366f1', fontcolor='white', shape='circle')
                     
-                    for r in range(n_nodes):
-                        for c in range(n_nodes):
+                    for r in range(n_int):
+                        for c in range(n_int):
                             w = matrix_data[r, c]
                             if w < 900 and r != c:
                                 u, v = node_names[r], node_names[c]
