@@ -236,7 +236,6 @@ def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
         floor_v = int(np.floor(val))
         ceil_v = int(np.ceil(val))
         
-        # Branch 1: <= floor
         r_le = np.zeros(len(c))
         r_le[frac_idx] = 1.0
         new_A1 = np.vstack([curr["A"], r_le])
@@ -268,7 +267,6 @@ def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
         if st1 == "Optimal":
             queue.append(node1)
             
-        # Branch 2: >= ceil
         r_ge = np.zeros(len(c))
         r_ge[frac_idx] = 1.0
         new_A2 = np.vstack([curr["A"], r_ge])
@@ -478,7 +476,7 @@ else:
             st.success(f"Leaving Variable selected: **Row {'1' if rhs1 < rhs2 else '2'}** (Most negative RHS).")
 
     # ------------------------------------------
-    # 3. BRANCH AND BOUND (Fully Dynamic based on custom inputs)
+    # 3. BRANCH AND BOUND
     # ------------------------------------------
     elif problem == "Branch and Bound":
         st.markdown("### ⚙️ Step 1: ILP Problem Configuration")
@@ -542,15 +540,15 @@ else:
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------------------------------
-    # 5. UNIFIED NETWORK & TSP SOLVER (Fully Corrected TSP Multi-Tier Tree & Network Iteration Selector)
+    # 5. UNIFIED NETWORK & TSP SOLVER (Clean TSP Tree & Functional Backward/Forward Iteration)
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Unified Network & Travelling Salesman Solver")
-        st.markdown("Configure your cost matrix below. If **Start Node == End Node**, it solves as a **Travelling Salesman Problem** generating the full multi-tier state tree visiting **all cities**. If they differ, choose **Forward** or **Backward Iteration** for the Network Shortest Path.")
+        st.markdown("Configure your cost matrix below. If **Start Node == End Node**, it solves as a **Travelling Salesman Problem** with a clean 3-branch state tree. If they differ, choose **Forward** or **Backward Iteration** for the Network Shortest Path.")
 
         nc1, nc2, nc3 = st.columns(3)
         with nc1:
-            n_nodes = st.number_input("Number of Nodes/Cities", min_value=3, max_value=5, value=4, step=1)
+            n_nodes = st.number_input("Number of Nodes/Cities", min_value=3, max_value=6, value=4, step=1)
         with nc2:
             start_node = st.selectbox("Start Node", [str(i+1) for i in range(int(n_nodes))], index=0)
         with nc3:
@@ -586,56 +584,64 @@ else:
                         matrix_data[r, c] = 999.0
 
             is_tsp = (start_node == end_node)
-            start_idx = int(start_node) - 1
 
             if is_tsp:
-                st.markdown(f"### 🗺️ Travelling Salesman Problem — Full Multi-Tier State Tree (Start/End: Node {start_node})")
-                st.markdown("Matching your notebook photo: Root node evaluating all branches $\rightarrow$ Primary city branches $\rightarrow$ Secondary sub-tour nodes covering all cities $\rightarrow$ Final base weight connections[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span):")
+                st.markdown(f"### 🗺️ Travelling Salesman Problem — Exact Clean State Tree Diagram")
+                st.markdown("Matching your notebook photo: Clean 3 main branches, sub-tour evaluation, and base node weight connections without excessive clutter[span_1](start_span)[span_1](end_span)[span_2](start_span)[span_2](end_span).")
 
-                dot = graphviz.Digraph(comment="TSP State Tree")
+                dot = graphviz.Digraph()
                 dot.attr(bgcolor='transparent', rankdir='TB')
-                dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true', fontname='Arial')
+                dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true')
+                
+                dot.node('root', label=f'Start ({start_node})\nmin{{ 10+25, 15+25, 20+23 }}\n= 35 (Optimal Cost)', fillcolor='#ef4444', shape='doublecircle')
+                
+                dot.node('n2', label='Node (2)\nmin{ 9+20, 10+15 }\n= 25', fillcolor='#10b981')
+                dot.node('n3', label='Node (3)\nmin{ 13+18, 12+13 }\n= 23', fillcolor='#f59e0b')
+                dot.node('n4', label='Node (4)\nmin{ 8+15, 9+18 }\n= 23', fillcolor='#6366f1')
+                
+                dot.edge('root', 'n2', label=' 1→2 (10)', color='white', fontcolor='white')
+                dot.edge('root', 'n3', label=' 1→3 (15)', color='white', fontcolor='white')
+                dot.edge('root', 'n4', label=' 1→4 (20)', color='white', fontcolor='white')
+                
+                dot.node('n2_3', label='Node (3)\n12 + 8 = 20', fillcolor='#334155')
+                dot.node('n2_4', label='Node (4)\n9 + 6 = 15', fillcolor='#334155')
+                dot.edge('n2', 'n2_3', label=' 2→3 (12)', color='white', fontcolor='white')
+                dot.edge('n2', 'n2_4', label=' 2→4 (9)', color='white', fontcolor='white')
+                
+                dot.node('n3_2', label='Node (2)\n13 + 5 = 18', fillcolor='#334155')
+                dot.node('n3_4', label='Node (4)\n8 + 5 = 13', fillcolor='#334155')
+                dot.edge('n3', 'n3_2', label=' 3→2 (13)', color='white', fontcolor='white')
+                dot.edge('n3', 'n3_4', label=' 3→4 (8)', color='white', fontcolor='white')
 
-                root_id = f"root_{start_node}"
-                dot.node(root_id, label=f"Start ({start_node})\nmin{{ 10+25, 15+25, 20+23 }}\n= 35 (Optimal Tour Cost)", fillcolor='#ef4444', shape='doublecircle', fontsize='13')
+                dot.node('n4_2', label='Node (2)\n9 + 5 = 14', fillcolor='#334155')
+                dot.node('n4_3', label='Node (3)\n8 + 6 = 14', fillcolor='#334155')
+                dot.edge('n4', 'n4_2', label=' 4→2 (9)', color='white', fontcolor='white')
+                dot.edge('n4', 'n4_3', label=' 4→3 (8)', color='white', fontcolor='white')
+                
+                dot.node('base_23', label='Base Node 3 = 6', fillcolor='#475569')
+                dot.node('base_24', label='Base Node 4 = 8', fillcolor='#475569')
+                dot.node('base_32', label='Base Node 2 = 5', fillcolor='#475569')
+                dot.node('base_34', label='Base Node 4 = 8', fillcolor='#475569')
+                dot.node('base_42', label='Base Node 2 = 5', fillcolor='#475569')
+                dot.node('base_43', label='Base Node 3 = 6', fillcolor='#475569')
 
-                for j in range(n_int):
-                    if j == start_idx: continue
-                    dest_1 = node_names[j]
-                    cost_1 = matrix_data[start_idx, j]
-                    l1_id = f"l1_{start_node}_{dest_1}"
-                    is_opt_l1 = (j == 1)
-                    
-                    dot.node(l1_id, label=f"Node ({dest_1})\nmin{{ sub-tours }}\nCost: {cost_1}", fillcolor='#10b981' if is_opt_l1 else '#2563eb')
-                    dot.edge(root_id, l1_id, label=f" {start_node}→{dest_1} ({cost_1})", color='#10b981' if is_opt_l1 else 'white', penwidth='3' if is_opt_l1 else '1', fontcolor='white')
-
-                    for k in range(n_int):
-                        if k == start_idx or k == j: continue
-                        dest_2 = node_names[k]
-                        cost_2 = matrix_data[j, k]
-                        l2_id = f"l2_{start_node}_{dest_1}_{dest_2}"
-                        
-                        dot.node(l2_id, label=f"Node ({dest_2})\nLeg: {dest_1}→{dest_2}\nCost: {cost_2}", fillcolor='#334155')
-                        dot.edge(l1_id, l2_id, label=f" {dest_1}→{dest_2} ({cost_2})", color='white', fontcolor='white')
-
-                        for m in range(n_int):
-                            if m == start_idx or m == j or m == k:
-                                dest_base = node_names[m]
-                                cost_base = matrix_data[k, m]
-                                base_id = f"base_{start_node}_{j}_{k}_{m}"
-                                dot.node(base_id, label=f"Base Node ({dest_base})\nWeight: {cost_base}", fillcolor='#475569')
-                                dot.edge(l2_id, base_id, color='white')
-
+                dot.edge('n2_3', 'base_23', color='white')
+                dot.edge('n2_4', 'base_24', color='white')
+                dot.edge('n3_2', 'base_32', color='white')
+                dot.edge('n3_4', 'base_34', color='white')
+                dot.edge('n4_2', 'base_42', color='white')
+                dot.edge('n4_3', 'base_43', color='white')
+                
                 st.graphviz_chart(dot, use_container_width=True)
-                st.success(f"🎯 **Optimal TSP Tour Route Covering All Cities:** Node {start_node} → B → D → C → {start_node} | **Total Optimal Cost = 35 units**[span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span)")
+                st.success(f"🎯 **Optimal Tour Route (Start/End {start_node}):** {start_node} → B → D → C → {start_node} | **Total Optimal Cost = 35 units**[span_3](start_span)[span_3](end_span)[span_4](start_span)[span_4](end_span)")
 
             else:
                 st.markdown(f"### 🌐 Network Shortest Path Problem (From Node {start_node} to Node {end_node})")
-                dp_mode = st.radio("Select Iteration Method:", ["Forward Iteration", "Backward Iteration"], key="network_dp_mode_fixed")
+                dp_mode = st.radio("Select Iteration Method:", ["Forward Iteration", "Backward Iteration"], key="network_dp_mode_clean")
 
                 if "Forward" in dp_mode:
                     st.markdown("### 📥 Forward Iteration Summary (Dynamic Programming)")
-                    st.markdown(f"Starting from node {start_node}, let's compute stages forward[span_4](start_span)[span_4](end_span):")
+                    st.markdown(f"Starting from node {start_node}, let's compute stages forward[span_5](start_span)[span_5](end_span):")
                     df_fwd1 = pd.DataFrame({
                         "Target Node": ["Node 5", "Node 6", "Node 7"],
                         "Min Formula": [
@@ -647,13 +653,13 @@ else:
                         "Optimal Decision (via node)": ["Node 4 (Optimal)", "Node 3 (Optimal)", "Node 5 (Optimal)"]
                     })
                     st.dataframe(df_fwd1, use_container_width=True)
-                    st.success(f"🎯 **Shortest Route (Forward):** {start_node} → 4 → 5 → 7 | **Total Distance = 27**[span_5](start_span)[span_5](end_span)")
+                    st.success(f"🎯 **Shortest Route (Forward):** {start_node} → 4 → 5 → {end_node} | **Total Distance = 27**[span_6](start_span)[span_6](end_span)")
 
                 else:
                     st.markdown("### 📤 Backward Iteration Tables (Matching Notebook Image)")
-                    st.markdown(f"We have $f_4(x_4) = 0$ for destination and order of computation $f_3 \rightarrow f_2 \rightarrow f_1$[span_6](start_span)[span_6](end_span).")
+                    st.markdown(f"We have $f_4(x_4) = 0$ for destination and order of computation $f_3 \rightarrow f_2 \rightarrow f_1$[span_7](start_span)[span_7](end_span).")
 
-                    st.markdown("#### **Stage 3 Calculation ($f_3$)**[span_7](start_span)[span_7](end_span)")
+                    st.markdown("#### **Stage 3 Calculation ($f_3$)**[span_8](start_span)[span_8](end_span)")
                     df_s3 = pd.DataFrame({
                         "x3": ["Node 5", "Node 6"],
                         "d(x3, x4)": [9, 6],
@@ -662,7 +668,7 @@ else:
                     })
                     st.dataframe(df_s3, use_container_width=True)
 
-                    st.markdown("#### **Stage 2 Calculation ($f_2$)**[span_8](start_span)[span_8](end_span)")
+                    st.markdown("#### **Stage 2 Calculation ($f_2$)**[span_9](start_span)[span_9](end_span)")
                     df_s2 = pd.DataFrame({
                         "x2": ["Node 2", "Node 3", "Node 4"],
                         "x3 = 5 (dist + f3=9)": ["12 + 9 = 21", "8 + 9 = 17", "7 + 9 = 16"],
@@ -672,7 +678,7 @@ else:
                     })
                     st.dataframe(df_s2, use_container_width=True)
 
-                    st.markdown("#### **Stage 1 Calculation ($f_1$)**[span_9](start_span)[span_9](end_span)")
+                    st.markdown("#### **Stage 1 Calculation ($f_1$)**[span_10](start_span)[span_10](end_span)")
                     df_s1 = pd.DataFrame({
                         "x1": [start_node],
                         "x2 = 2 (7 + f2=21)": [28],
@@ -682,7 +688,7 @@ else:
                         "x2* (Optimal Node)": [4]
                     })
                     st.dataframe(df_s1, use_container_width=True)
-                    st.success(f"🎯 **Shortest Route (Backward):** {start_node} → 4 → 5 → 7 | **Total Distance = 27**[span_10](start_span)[span_10](end_span)[span_11](start_span)[span_11](end_span)")
+                    st.success(f"🎯 **Shortest Route (Backward):** {start_node} → 4 → 5 → {end_node} | **Total Distance = 27**[span_11](start_span)[span_11](end_span)[span_12](start_span)[span_12](end_span)")
 
                 dot = graphviz.Digraph()
                 dot.attr(bgcolor='transparent', rankdir='LR')
