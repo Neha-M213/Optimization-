@@ -72,7 +72,7 @@ def go_home():
     st.session_state.selected_problem = None
 
 # ==========================================
-# HELPER: FLEXIBLE BIG-M SIMPLEX ENGINE
+# HELPER: BIG-M SIMPLEX ENGINE WITH TABLEAU HIGHLIGHTS
 # ==========================================
 def solve_simplex_big_m(obj_type, c, A, signs, b):
     M = 1e5
@@ -123,8 +123,10 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         cj_zj = cost_row - zj
         z_val = cb @ rhs
         
-        if any(np.isclose(rhs, 0.0, atol=1e-7)):
-            special_flags.add("Degeneracy Detected: A basic variable has X_B (RHS) = 0.")
+        # Degeneracy check (RHS = 0)
+        deg_rows = [i for i, r in enumerate(rhs) if np.isclose(r, 0.0, atol=1e-7)]
+        if deg_rows:
+            special_flags.add(f"⚠️ **Degeneracy Highlight:** Row(s) {[r+1 for r in deg_rows]} have basic variable RHS = 0.")
             
         if np.max(cj_zj) <= 1e-7:
             df = pd.DataFrame(tableau, columns=var_names)
@@ -132,17 +134,19 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             df.insert(1, "C_B", np.round(cb, 3))
             df["X_B (RHS)"] = np.round(rhs, 4)
             df.loc[len(df)] = ["Z_j", ""] + list(np.round(zj, 3)) + [round(z_val if obj_type == "Maximize" else -z_val, 4)]
+            df.loc[len(df)] = ["C_j - Z_j", ""] + list(np.round(cj_zj, 3)) + [""]
             iterations.append((it + 1, df, "Optimal Tableau Reached"))
             
             for idx_pos, b_idx in enumerate(basis_indices):
                 if b_idx in artificial_indices and rhs[idx_pos] > 1e-6:
                     status = "Infeasible"
-                    special_flags.add(f"Infeasible Solution: Artificial variable remains positive.")
+                    special_flags.add(f"🚩 **Infeasibility Highlight:** Artificial variable {var_names[b_idx]} remains positive in basis (RHS = {rhs[idx_pos]:.4f}).")
             
             if status == "Optimal":
                 non_basic = [j for j in range(len(var_names)) if j not in basis_indices and j not in artificial_indices]
-                if any(np.isclose(cj_zj[j], 0.0, atol=1e-7) for j in non_basic):
-                    special_flags.add("Alternative Optima Detected: C_j - Z_j = 0 for a non-basic variable.")
+                alt_vars = [var_names[j] for j in non_basic if np.isclose(cj_zj[j], 0.0, atol=1e-7)]
+                if alt_vars:
+                    special_flags.add(f"💡 **Alternative Optima Highlight:** Non-basic variable(s) {alt_vars} have C_j - Z_j = 0.")
             break
             
         entering_col = int(np.argmax(cj_zj))
@@ -150,7 +154,7 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         
         if all(col_vals <= 1e-7):
             status = "Unbounded"
-            special_flags.add("Unbounded Solution.")
+            special_flags.add(f"🚩 **Unboundedness Highlight:** Pivot column {var_names[entering_col]} has entries ≤ 0.")
             df = pd.DataFrame(tableau, columns=var_names)
             df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
             df["X_B (RHS)"] = np.round(rhs, 4)
@@ -186,67 +190,46 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     return status, sol, float(c @ sol), iterations, list(special_flags)
 
 # ==========================================
-# HELPER: RECURSIVE BRANCH & BOUND WITH STRIPS
+# HELPER: 2D FEASIBLE POLYGON
 # ==========================================
-def run_recursive_branch_and_bound(obj_type, c, A, signs, b):
-    root_status, root_sol, root_z, _, _ = solve_simplex_big_m(obj_type, c, A, signs, b)
-    
-    tree_nodes = []
-    queue = [(A, signs, b, "Root", "P0 (Root)", root_status, root_sol, root_z, [])]
-    best_integer_z = -1e18 if obj_type == "Maximize" else 1e18
-    best_integer_sol = None
-    node_counter = 0
+def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
+    num_cons = len(b_vals)
+    candidates = [(0.0, 0.0), (0.0, max_bound), (max_bound, 0.0), (max_bound, max_bound)]
+    for i in range(num_cons):
+        a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
+        if abs(a2) > 1e-7:
+            candidates.append((0.0, b_i / a2))
+            candidates.append((max_bound, (b_i - a1 * max_bound) / a2))
+        if abs(a1) > 1e-7:
+            candidates.append((b_i / a1, 0.0))
+            candidates.append(((b_i - a2 * max_bound) / a1, max_bound))
+    for i in range(num_cons):
+        for j in range(i + 1, num_cons):
+            M_sys = np.array([[A_rows[i][0], A_rows[i][1]], [A_rows[j][0], A_rows[j][1]]], dtype=float)
+            rhs_sys = np.array([b_vals[i], b_vals[j]], dtype=float)
+            if abs(np.linalg.det(M_sys)) > 1e-7:
+                pt = np.linalg.solve(M_sys, rhs_sys)
+                candidates.append((float(pt[0]), float(pt[1])))
 
-    while queue and len(tree_nodes) < 20:
-        curr_A, curr_signs, curr_b, parent_id, node_name, status, sol, z_val, strips = queue.pop(0)
-        node_id = f"node_{node_counter}"
-        node_counter += 1
+    valid_verts = []
+    for x, y in candidates:
+        if x < -1e-4 or y < -1e-4 or x > max_bound + 1e-4 or y > max_bound + 1e-4: continue
+        ok = True
+        for i in range(num_cons):
+            val = A_rows[i][0] * x + A_rows[i][1] * y
+            if signs[i] == "<=" and val > b_vals[i] + 1e-3: ok = False
+            elif signs[i] == ">=" and val < b_vals[i] - 1e-3: ok = False
+            elif signs[i] == "=" and not np.isclose(val, b_vals[i], atol=1e-2): ok = False
+        if ok:
+            pt_clean = (round(max(0.0, x), 3), round(max(0.0, y), 3))
+            if not any(np.isclose(pt_clean[0], vx, atol=1e-2) and np.isclose(pt_clean[1], vy, atol=1e-2) for vx, vy in valid_verts):
+                valid_verts.append(pt_clean)
 
-        is_integer = True
-        fractional_var = -1
-        if status == "Optimal":
-            for j in range(len(sol)):
-                if not np.isclose(sol[j], round(sol[j]), atol=1e-4):
-                    is_integer = False
-                    fractional_var = j
-                    break
-
-        tree_nodes.append({
-            "id": node_id, "name": node_name, "status": status, "sol": sol, "z": z_val, 
-            "is_integer": is_integer, "parent": parent_id, "strips": strips
-        })
-
-        if status == "Optimal":
-            if is_integer:
-                if obj_type == "Maximize" and z_val > best_integer_z:
-                    best_integer_z = z_val
-                    best_integer_sol = sol
-                elif obj_type == "Minimize" and z_val < best_integer_z:
-                    best_integer_z = z_val
-                    best_integer_sol = sol
-            else:
-                val = sol[fractional_var]
-                floor_v = int(np.floor(val))
-                ceil_v = int(np.ceil(val))
-                new_strip = (fractional_var, floor_v, ceil_v)
-
-                # Left branch
-                row_le = np.zeros(len(c)); row_le[fractional_var] = 1.0
-                next_A1 = np.vstack([curr_A, row_le])
-                next_s1 = curr_signs + ["<="]
-                next_b1 = np.append(curr_b, floor_v)
-                st1, sol1, z1, _, _ = solve_simplex_big_m(obj_type, c, next_A1, next_s1, next_b1)
-                queue.append((next_A1, next_s1, next_b1, node_id, f"P_{node_counter} (x{fractional_var+1} ≤ {floor_v})", st1, sol1, z1, strips + [new_strip]))
-
-                # Right branch
-                row_ge = np.zeros(len(c)); row_ge[fractional_var] = 1.0
-                next_A2 = np.vstack([curr_A, row_ge])
-                next_s2 = curr_signs + [">="]
-                next_b2 = np.append(curr_b, ceil_v)
-                st2, sol2, z2, _, _ = solve_simplex_big_m(obj_type, c, next_A2, next_s2, next_b2)
-                queue.append((next_A2, next_s2, next_b2, node_id, f"P_{node_counter+1} (x{fractional_var+1} ≥ {ceil_v})", st2, sol2, z2, strips + [new_strip]))
-
-    return tree_nodes, best_integer_z if best_integer_z != -1e18 else None, best_integer_sol
+    if len(valid_verts) >= 3:
+        cx = sum(p[0] for p in valid_verts) / len(valid_verts)
+        cy = sum(p[1] for p in valid_verts) / len(valid_verts)
+        valid_verts.sort(key=lambda p: np.arctan2(p[1] - cy, p[0] - cx))
+    return valid_verts
 
 # ==========================================
 # VIEW 1: LANDING SCREEN
@@ -258,7 +241,7 @@ if st.session_state.selected_problem is None:
     col1, col2, col3 = st.columns(3, gap="large")
     with col1: st.button("📈 Simplex Method", on_click=select_problem, args=("Simplex Method",))
     with col2: st.button("🔄 Dual Simplex Method", on_click=select_problem, args=("Dual Simplex Method",))
-    with col3: st.button("🌳 Branch and Bound (Recursive ILP)", on_click=select_problem, args=("Branch and Bound",))
+    with col3: st.button("🌳 Branch and Bound", on_click=select_problem, args=("Branch and Bound",))
 
     st.write("")
     col4, col5, col6 = st.columns(3, gap="large")
@@ -282,7 +265,7 @@ else:
     st.divider()
 
     # ------------------------------------------
-    # 1. SIMPLEX METHOD
+    # 1. SIMPLEX METHOD (Restored Graph & Tableau Highlighting)
     # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
@@ -314,13 +297,9 @@ else:
         )
 
         st.divider()
-        st.markdown("### 🔍 Solution Status & Special Case Highlights")
+        st.markdown("### 🔍 Solution Status & Special Case Table Highlights")
         if flags:
-            for f in flags:
-                if "Infeasible" in f: st.error(f"🚩 **Infeasibility Highlight:** {f}")
-                elif "Unbounded" in f: st.error(f"🚩 **Unboundedness Highlight:** {f}")
-                elif "Degeneracy" in f: st.warning(f"⚠️ **Degeneracy Highlight:** {f}")
-                else: st.info(f"💡 **Alternative Optima Highlight:** {f}")
+            for f in flags: st.warning(f)
         else:
             st.success("✅ **Unique Optimal Solution**")
 
@@ -333,6 +312,44 @@ else:
         for iter_num, df, note in iterations:
             st.markdown(f"**Iteration {iter_num}** — {note}")
             st.dataframe(df, use_container_width=True)
+
+        # Restored Simplex Feasible Region Graph
+        st.divider()
+        st.markdown("### 📈 Feasible Region, Constraints & Corner Points Visualization")
+        if int(num_vars) == 2:
+            max_rhs = max([abs(val) for val in b_vals]) if b_vals else 10.0
+            max_bound = max(max_rhs * 1.3, 8.0)
+            x_line = np.linspace(0, max_bound, 200)
+
+            fig = go.Figure()
+            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
+
+            valid_verts = get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound)
+            if len(valid_verts) >= 3:
+                poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
+                poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
+                fig.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(99, 102, 241, 0.30)", line=dict(color="#818cf8", width=2), name="Feasible Region"))
+
+            for i in range(int(num_cons)):
+                a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
+                col_c = colors[i % len(colors)]
+                if abs(a2) > 1e-6:
+                    y_vals = (b_i - a1 * x_line) / a2
+                    mask = (y_vals >= 0) & (y_vals <= max_bound)
+                    if np.any(mask):
+                        fig.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}", line=dict(color=col_c, width=3)))
+
+            if valid_verts:
+                vx, vy = zip(*valid_verts)
+                fig.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"({p[0]}, {p[1]})" for p in valid_verts], textposition="top right", marker=dict(size=11, color="#ffffff", line=dict(width=2, color="#38bdf8")), name="Corner Points"))
+
+            if status == "Optimal":
+                fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
+
+            fig.update_layout(xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", xaxis=dict(range=[0, max_bound]), yaxis=dict(range=[0, max_bound]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("💡 2D Graphical visualization is displayed when Number of Objective Variables = 2.")
 
     # ------------------------------------------
     # 2. DUAL SIMPLEX METHOD
@@ -347,7 +364,7 @@ else:
             st.success(f"Leaving Variable selected: **Row {'1' if rhs1 < rhs2 else '2'}** (Most negative RHS).")
 
     # ------------------------------------------
-    # 3. BRANCH AND BOUND (With Reliable Scatter Polygon Strip Graphs)
+    # 3. BRANCH AND BOUND (Sequential LP2, LP3, LP4... Graphs & Diagrams)
     # ------------------------------------------
     elif problem == "Branch and Bound":
         st.markdown("### ⚙️ Step 1: Problem Dimensions")
@@ -380,74 +397,74 @@ else:
 
         if run_bb:
             st.divider()
-            nodes, best_z, best_sol = run_recursive_branch_and_bound(
-                bb_obj, np.array(bb_c), np.array(bb_A), bb_signs, np.array(bb_b)
-            )
+            
+            # Root LP Relaxation
+            root_st, root_sol, root_z, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.array(bb_A), bb_signs, np.array(bb_b))
+            st.info(f"**LP1 (Root Problem):** Z* = {root_z:.2f} | Solution: " + ", ".join([f"x{j+1}={root_sol[j]:.2f}" for j in range(int(bb_vars))]))
 
-            col_res1, col_res2 = st.columns([1, 1.3], gap="large")
-            with col_res1:
-                st.markdown("### 🏆 ILP Optimal Integer Result")
-                if best_z is not None:
-                    st.success(f"🎯 **Integer Optimal Solution Found!**")
-                    sol_str = ", ".join([f"x{j+1} = {best_sol[j]:.2f}" for j in range(int(bb_vars))])
-                    st.metric(label="Optimal Integer Objective Z*", value=f"{best_z:.2f}")
-                    st.markdown(f"**Optimal Variables:** {sol_str}")
+            # Check fractional variable to generate LP2 and LP3
+            frac_v = [j for j in range(int(bb_vars)) if not np.isclose(root_sol[j], round(root_sol[j]), atol=1e-4)]
+            if frac_v:
+                v_idx = frac_v[0]
+                val = root_sol[v_idx]
+                f_v = int(np.floor(val))
+                c_v = int(np.ceil(val))
+
+                st.markdown(f"### 📉 Strip Deletion & Sequential LPP Generation for Variable $x_{v_idx+1}$")
+                
+                # Subproblem LP2 (x_k <= floor)
+                r_le = np.zeros(int(bb_vars)); r_le[v_idx] = 1.0
+                st2, sol2, z2, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le]), bb_signs + ["<="], np.append(bb_b, f_v))
+                st.success(f"**LP2 (Add $x_{v_idx+1} \\le {f_v}$):** Z = {z2:.2f} | Status: {st2}")
+
+                # Subproblem LP3 (x_k >= ceil)
+                r_ge = np.zeros(int(bb_vars)); r_ge[v_idx] = 1.0
+                st3, sol3, z3, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_ge]), bb_signs + [">="], np.append(bb_b, c_v))
+                st.info(f"**LP3 (Add $x_{v_idx+1} \\ge {c_v}$):** Z = {z3:.2f} | Status: {st3}")
+
+                # Graph for LP2 & LP3
+                fig2 = go.Figure()
+                max_b = max(bb_b) * 1.3
+                fig2.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(99, 102, 241, 0.20)", line=dict(color="#818cf8", width=2), name="LP1 Region"))
+                if v_idx == 0:
+                    fig2.add_trace(go.Scatter(x=[f_v, c_v, c_v, f_v, f_v], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.40)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Deleted Strip LP2/LP3 ({f_v} < x₁ < {c_v})"))
                 else:
-                    st.error("No integer feasible solution found.")
+                    fig2.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[f_v, f_v, c_v, c_v, f_v], fill="toself", fillcolor="rgba(244, 63, 94, 0.40)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Deleted Strip LP2/LP3 ({f_v} < x₂ < {c_v})"))
+                fig2.update_layout(title="Sequential Diagram 1: LP2 & LP3 Strip Deletion", xaxis_title="x₁", yaxis_title="x₂", template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=380)
+                st.plotly_chart(fig2, use_container_width=True)
 
-            with col_res2:
-                st.markdown("### 🌳 Full Recursive Branch & Bound Decision Tree")
-                dot = graphviz.Digraph()
-                dot.attr(bgcolor="transparent", rankdir="TB")
-                dot.node_attr.update(style="filled", fontcolor="white", shape="box", rounded="true")
+                # Check further branching for LP4 and LP5 if LP2 is still fractional
+                if st2 == "Optimal" and not all(np.isclose(sol2[j], round(sol2[j]), atol=1e-4) for j in range(int(bb_vars))):
+                    frac_v2 = [j for j in range(int(bb_vars)) if not np.isclose(sol2[j], round(sol2[j]), atol=1e-4)][0]
+                    val2 = sol2[frac_v2]
+                    f_v2 = int(np.floor(val2))
+                    c_v2 = int(np.ceil(val2))
 
-                for n in nodes:
-                    color = "#10b981" if n["is_integer"] else ("#6366f1" if n["status"] == "Optimal" else "#ef4444")
-                    sol_txt = ", ".join([f"x{j+1}={n['sol'][j]:.2f}" for j in range(int(bb_vars))]) if n['status'] == "Optimal" else n['status']
-                    dot.node(n["id"], label=f"{n['name']}\nZ = {n['z']:.2f}\n{sol_txt}", fillcolor=color)
-                    if n["parent"] != "Root":
-                        dot.edge(n["parent"], n["id"], color="white")
+                    st.markdown(f"### 📉 Further Branching: Generating LP4 and LP5 from LP2")
+                    r_le2 = np.zeros(int(bb_vars)); r_le2[frac_v2] = 1.0
+                    st4, sol4, z4, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le, r_le2]), bb_signs + ["<=", "<="], np.append(np.append(bb_b, f_v), f_v2))
+                    st.success(f"**LP4 (Add $x_{frac_v2+1} \\le {f_v2}$):** Z = {z4:.2f} | Status: {st4}")
 
-                st.graphviz_chart(dot, use_container_width=True)
+                    r_ge2 = np.zeros(int(bb_vars)); r_ge2[frac_v2] = 1.0
+                    st5, sol5, z5, _, _ = solve_simplex_big_m(bb_obj, np.array(bb_c), np.vstack([bb_A, r_le, r_ge2]), bb_signs + ["<=", ">="], np.append(np.append(bb_b, f_v), c_v2))
+                    st.info(f"**LP5 (Add $x_{frac_v2+1} \\ge {c_v2}$):** Z = {z5:.2f} | Status: {st5}")
 
-            # Recursive Strip Deletion Visualizations using robust Scatter polygons
-            st.divider()
-            st.markdown("### 📉 Cumulative Strip Deletion Graphs Across Recursive Branches")
-            for n in nodes:
-                if n["strips"]:
-                    st.markdown(f"#### Sub-Problem: `{n['name']}` (Cumulative Deleted Strips)")
-                    fig = go.Figure()
-                    max_b = max(bb_b) * 1.3 if bb_b else 10.0
-                    
-                    # Feasible region bounding box
-                    fig.add_trace(go.Scatter(
-                        x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0],
-                        fill="toself", fillcolor="rgba(99, 102, 241, 0.20)",
-                        line=dict(color="#818cf8", width=2), name="Feasible Region"
-                    ))
+                    # Graph for LP4 & LP5 (Cumulative diagram below)
+                    fig3 = go.Figure()
+                    fig3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(99, 102, 241, 0.20)", line=dict(color="#818cf8", width=2), name="LP1 Region"))
+                    # First strip
+                    if v_idx == 0:
+                        fig3.add_trace(go.Scatter(x=[f_v, c_v, c_v, f_v, f_v], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.30)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Strip 1 ({f_v}<x₁<{c_v})"))
+                    else:
+                        fig3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[f_v, f_v, c_v, c_v, f_v], fill="toself", fillcolor="rgba(244, 63, 94, 0.30)", line=dict(color="#f43f5e", width=2, dash="dash"), name=f"Strip 1 ({f_v}<x₂<{c_v})"))
+                    # Second strip (LP4/LP5 cumulative)
+                    if frac_v2 == 0:
+                        fig3.add_trace(go.Scatter(x=[f_v2, c_v2, c_v2, f_v2, f_v2], y=[0, 0, max_b, max_b, 0], fill="toself", fillcolor="rgba(244, 63, 94, 0.50)", line=dict(color="#fb7185", width=2, dash="dash"), name=f"Strip 2 LP4/LP5 ({f_v2}<x₁<{c_v2})"))
+                    else:
+                        fig3.add_trace(go.Scatter(x=[0, max_b, max_b, 0, 0], y=[f_v2, f_v2, c_v2, c_v2, f_v2], fill="toself", fillcolor="rgba(244, 63, 94, 0.50)", line=dict(color="#fb7185", width=2, dash="dash"), name=f"Strip 2 LP4/LP5 ({f_v2}<x₂<{c_v2})"))
 
-                    # Plot all cumulative deleted strips as filled rectangles using Scatter
-                    for var_idx, f_v, c_v in n["strips"]:
-                        if var_idx == 0:
-                            fig.add_trace(go.Scatter(
-                                x=[f_v, c_v, c_v, f_v, f_v], y=[0, 0, max_b, max_b, 0],
-                                fill="toself", fillcolor="rgba(244, 63, 94, 0.40)",
-                                line=dict(color="#f43f5e", width=2, dash="dash"),
-                                name=f"Deleted ({f_v} < x₁ < {c_v})"
-                            ))
-                        else:
-                            fig.add_trace(go.Scatter(
-                                x=[0, max_b, max_b, 0, 0], y=[f_v, f_v, c_v, c_v, f_v],
-                                fill="toself", fillcolor="rgba(244, 63, 94, 0.40)",
-                                line=dict(color="#f43f5e", width=2, dash="dash"),
-                                name=f"Deleted ({f_v} < x₂ < {c_v})"
-                            ))
-
-                    if n["status"] == "Optimal":
-                        fig.add_trace(go.Scatter(x=[n["sol"][0]], y=[n["sol"][1]], mode="markers+text", text=[f"Opt ({n['sol'][0]:.2f}, {n['sol'][1]:.2f})"], textposition="top right", marker=dict(size=13, color="#fbbf24"), name="Optimum"))
-
-                    fig.update_layout(xaxis_title="x₁", yaxis_title="x₂", xaxis=dict(range=[0, max_b]), yaxis=dict(range=[0, max_b]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=400)
-                    st.plotly_chart(fig, use_container_width=True)
+                    fig3.update_layout(title="Sequential Diagram 2: Cumulative Strip Deletion (LP4 & LP5)", xaxis_title="x₁", yaxis_title="x₂", template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=380)
+                    st.plotly_chart(fig3, use_container_width=True)
 
     # ------------------------------------------
     # 4. GOMORY FRACTIONAL CUT
@@ -465,29 +482,20 @@ else:
         st.plotly_chart(fig, use_container_width=True)
 
     # ------------------------------------------
-    # 5. NETWORK SHORTEST PATH (Fully Populated Stages & DP)
+    # 5. NETWORK SHORTEST PATH
     # ------------------------------------------
     elif problem == "Network Shortest Path":
         st.markdown("### 🌐 Network Shortest Path Problem (Stage Decomposition & DP)")
-        st.markdown("Choose whether you want to solve via **Forward Iteration** or **Backward Iteration**.")
-
         iter_mode = st.radio("Select Dynamic Programming Iteration Method:", ["Forward Iteration", "Backward Iteration"])
 
         if iter_mode == "Forward Iteration":
             st.markdown("### 📥 Forward Iteration Analysis")
-            st.markdown("""
-            * **Stage 0:** Node 1 (Start)
-            * **Stage 1:** Nodes 2 ($f_1(2)=7$), 3 ($f_1(3)=8$), 4 ($f_1(4)=5$)[span_0](start_span)[span_0](end_span)
-            * **Stage 2:** Nodes 5 & 6
-            * **Stage 3:** Node 7 (End)
-            """)
             st.latex(r"f_2(5) = \min \{ 7+12, 8+8, 5+7 \} = 12 \text{ (via Node 4)}")
             st.latex(r"f_2(6) = \min \{ 8+9, 5+13 \} = 17 \text{ (via Node 3)}")
             st.latex(r"f_3(7) = \min \{ 12+9, 17+6 \} = 21 \text{ (via Node 5)}")
             st.success("🎯 **Shortest Route (Forward):** $1 \rightarrow 4 \rightarrow 5 \rightarrow 7$ | **Total Distance = 27**")
         else:
             st.markdown("### 📤 Backward Iteration Analysis")
-            st.markdown("We set $f_4(x_4) = 0$ for $x_4 = 7$ and compute backwards ($f_3 \rightarrow f_2 \rightarrow f_1$).")
             data_st3 = {"x3": ["Node 5", "Node 6"], "d(x3, x4)": ["9", "6"], "f3(x3)": ["9", "6"], "x4*": ["7", "7"]}
             st.dataframe(pd.DataFrame(data_st3), use_container_width=True)
             st.success("🎯 **Shortest Route (Backward):** $1 \rightarrow 4 \rightarrow 5 \rightarrow 7$ | **Total Distance = 27**")
@@ -550,4 +558,4 @@ else:
         dot.edge('n4_3', 'base_43', color='white')
         
         st.graphviz_chart(dot, use_container_width=True)
-        st.success("🎯 **Optimal Tour Route:** 1 → 2 → 4 → 3 → 1 | **Total Optimal Cost = 35 units**[span_1](start_span)[span_1](end_span)[span_2](start_span)[span_2](end_span)")
+        st.success("🎯 **Optimal Tour Route:** 1 → 2 → 4 → 3 → 1 | **Total Optimal Cost = 35 units**[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span)")
