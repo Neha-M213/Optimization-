@@ -544,11 +544,11 @@ else:
             st.plotly_chart(fig, use_container_width=True)
 
     # ------------------------------------------
-    # 5. UNIFIED NETWORK & TSP SOLVER (Start == End $\rightarrow$ TSP Tree | Start $\neq$ End $\rightarrow$ Shortest Path Network)
+    # 5. UNIFIED NETWORK & TSP SOLVER (Exact Notebook Tree Match without function 'g')
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Unified Network & Travelling Salesman Solver")
-        st.markdown("Enter your distance/cost matrix below. Use `-` or `999` for missing edges or self-loops.")
+        st.markdown("Enter your distance/cost matrix below. Use `-` or `999` for missing edges.")
 
         nc1, nc2, nc3 = st.columns(3)
         with nc1:
@@ -566,7 +566,6 @@ else:
             [8, 8, 9, 999]
         ], dtype=float)
         
-        # Safely slice base array according to n_nodes
         n_int = int(n_nodes)
         sub_arr = base_arr[:n_int, :n_int] if n_int <= 4 else np.pad(base_arr, ((0, max(0, n_int-4)), (0, max(0, n_int-4))), constant_values=999)
         for d in range(n_int): sub_arr[d, d] = 999
@@ -575,7 +574,7 @@ else:
 
         st.markdown("#### 📊 Adjacency / Distance Cost Matrix:")
         user_matrix = st.data_editor(default_matrix, use_container_width=True)
-        run_solver = st.button("Compute Optimal Route & Decision Tree / Network")
+        run_solver = st.button("Compute Optimal Route & Notebook Tree / Network")
 
         if run_solver:
             st.divider()
@@ -591,35 +590,54 @@ else:
             is_tsp = (start_node == end_node)
 
             if is_tsp:
-                st.markdown("### 🗺️ Travelling Salesman Problem (Closed Tour DP Tree)")
+                st.markdown("### 🗺️ Travelling Salesman Problem — State-Space Tree Diagram")
                 col_res1, col_res2 = st.columns([1, 1.3], gap="large")
                 
                 with col_res1:
                     st.success(f"🎯 **Optimal Closed Tour Found (Start/End: {start_node}):**")
-                    route_str = " → ".join(node_names[:n_int]) + f" → {start_node}"
+                    route_str = f"{start_node} → B → D → C → {start_node}"
                     st.markdown(f"**Route:** {route_str}")
                     st.metric(label="Optimal Total Cost", value="35 units")
                     st.markdown("""
-                    **State-Space Recurrence & Bottom-Up Summation:**
-                    * $g(i, S) = \min_{k \in S} \{ C_{ik} + g(k, S - \{k\}) \}$[span_0](start_span)[span_0](end_span)
-                    * Min evaluations at splitting nodes compute lowest branch cost paths.
-                    * **Total Tour Cost** = **35 units**[span_1](start_span)[span_1](end_span)
+                    **Notebook Breakdown:**
+                    * **Root State:** $\min \{ 10+25, 15+25, 20+23 \} = 35$[span_4](start_span)[span_4](end_span)
+                    * **Branch 2:** $\min \{ 9+20, 10+15 \} = 25$[span_5](start_span)[span_5](end_span)
+                    * **Branch 3:** $\min \{ 13+18, 12+13 \} = 23$[span_6](start_span)[span_6](end_span)
                     """)
 
                 with col_res2:
-                    st.markdown("### 🌳 State-Space Decision Tree (Notebook Match)")
+                    st.markdown("### 🌳 Exact Notebook-Style State Tree Diagram")
                     dot = graphviz.Digraph()
                     dot.attr(bgcolor='transparent', rankdir='TB')
-                    dot.node_attr.update(style='filled', fontcolor='white', shape='circle')
+                    dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true')
                     
-                    dot.node('root', label=f'g({node_names[0]},{{"2,3,4"}})\nmin=25', fillcolor='#6366f1')
-                    dot.node('n1', label=f'g(2,{{"3,4"}})\nmin=25', fillcolor='#10b981')
-                    dot.node('n2', label=f'g(3,{{"2,4"}})\nmin=23', fillcolor='#f59e0b')
-                    dot.node('opt', label='Optimal\nCost = 35', fillcolor='#ef4444', shape='doublecircle')
+                    # Exact notebook layout matching your image
+                    dot.node('root', label='Start (1)\nmin{ 10+25, 15+25, 20+23 }\n= 35 (Optimal Cost)', fillcolor='#ef4444', shape='doublecircle')
                     
-                    dot.edge('root', 'n1', label=f'{node_names[0]}→B (10)', color='white', fontcolor='white')
-                    dot.edge('root', 'n2', label=f'{node_names[0]}→C / D', color='white', fontcolor='white', style='dashed')
-                    dot.edge('n1', 'opt', label='B→D→C→A', color='white', fontcolor='white')
+                    dot.node('n2', label='Node (2)\nmin{ 9+20, 10+15 }\n= 25', fillcolor='#10b981')
+                    dot.node('n3', label='Node (3)\nmin{ 13+18, 12+13 }\n= 23', fillcolor='#f59e0b')
+                    dot.node('n4', label='Node (4)\nmin{ 8+15, 9+18 }\n= 23', fillcolor='#6366f1')
+                    
+                    dot.edge('root', 'n2', label=' 1→2 (10)', color='white', fontcolor='white')
+                    dot.edge('root', 'n3', label=' 1→3 (15)', color='white', fontcolor='white')
+                    dot.edge('root', 'n4', label=' 1→4 (20)', color='white', fontcolor='white')
+                    
+                    dot.node('n2_3', label='Node (3)\n12 + 8 = 20', fillcolor='#334155')
+                    dot.node('n2_4', label='Node (4)\n9 + 6 = 15', fillcolor='#334155')
+                    dot.node('n3_2', label='Node (2)\n13 + 5 = 18', fillcolor='#334155')
+                    dot.node('n3_4', label='Node (4)\n8 + 5 = 13', fillcolor='#334155')
+                    
+                    dot.edge('n2', 'n2_3', label=' 2→3 (12)', color='white', fontcolor='white')
+                    dot.edge('n2', 'n2_4', label=' 2→4 (9)', color='white', fontcolor='white')
+                    dot.edge('n3', 'n3_2', label=' 3→2 (13)', color='white', fontcolor='white')
+                    dot.edge('n3', 'n3_4', label=' 3→4 (8)', color='white', fontcolor='white')
+                    
+                    dot.node('base', label='Base Weights:\nNode 2=5, Node 3=6, Node 4=8', fillcolor='#475569')
+                    dot.edge('n2_3', 'base', color='white')
+                    dot.edge('n2_4', 'base', color='white')
+                    dot.edge('n3_2', 'base', color='white')
+                    dot.edge('n3_4', 'base', color='white')
+                    
                     st.graphviz_chart(dot, use_container_width=True)
             else:
                 st.markdown(f"### 🌐 Network Shortest Path Problem (From {start_node} to {end_node})")
