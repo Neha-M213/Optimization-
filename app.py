@@ -229,7 +229,7 @@ else:
     st.divider()
 
     # ------------------------------------------
-    # 1. SIMPLEX METHOD (Fully Labeled & Vertex Corner Points)
+    # 1. SIMPLEX METHOD
     # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
@@ -286,109 +286,104 @@ else:
             sol_str = ", ".join([f"**x{j+1} = {sol[j]:.4f}**" for j in range(int(num_vars))])
             st.info(f"**Optimal Objective Z = {final_z:.4f}** | {sol_str}")
 
-        tab_col, viz_col = st.columns([1.3, 1], gap="large")
-        with tab_col:
-            st.markdown("### 📋 Step-by-Step Simplex Tableaux")
-            for iter_num, df, note in iterations:
-                st.markdown(f"**Iteration {iter_num}** — {note}")
-                st.dataframe(df, use_container_width=True)
+        st.divider()
+        st.markdown("### 📋 Step-by-Step Simplex Tableaux")
+        for iter_num, df, note in iterations:
+            st.markdown(f"**Iteration {iter_num}** — {note}")
+            st.dataframe(df, use_container_width=True)
 
-        with viz_col:
-            st.markdown("### 📈 Feasible Region, Constraints & Corner Points")
-            if int(num_vars) == 2:
-                max_bound = max(max(b_vals) * 1.4, 12.0)
-                x1_vals = np.linspace(0, max_bound, 300)
-                x2_vals = np.linspace(0, max_bound, 300)
-                X1, X2 = np.meshgrid(x1_vals, x2_vals)
-                Z_space = c_vals[0] * X1 + c_vals[1] * X2
-                feasible = (X1 >= 0) & (X2 >= 0)
-                
-                for i in range(int(num_cons)):
-                    lhs = A_rows[i][0] * X1 + A_rows[i][1] * X2
-                    if signs[i] == "<=": feasible &= (lhs <= b_vals[i] + 1e-5)
-                    elif signs[i] == ">=": feasible &= (lhs >= b_vals[i] - 1e-5)
-                    else: feasible &= np.isclose(lhs, b_vals[i], atol=0.15)
-                Z_space[~feasible] = np.nan
-                
-                fig = go.Figure()
-                colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
-                
-                # Plot Constraints with clear labels
-                for i in range(int(num_cons)):
-                    a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
-                    if abs(a2) > 1e-6:
-                        y_line = (b_i - a1*x1_vals)/a2
-                        valid_mask = (y_line >= 0) & (y_line <= max_bound)
-                        fig.add_trace(go.Scatter(
-                            x=x1_vals[valid_mask], y=y_line[valid_mask],
-                            mode='lines', name=f'Constraint {i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}',
-                            line=dict(color=colors[i%len(colors)], width=3)
-                        ))
-
-                fig.add_trace(go.Contour(x=x1_vals, y=x2_vals, z=Z_space, colorscale='Plasma', showscale=True, opacity=0.8))
-                
-                # Compute Corner Points (Vertices of feasible polygon)
-                vertices = [(0.0, 0.0)]
-                for i in range(int(num_cons)):
-                    a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
-                    if abs(a2) > 1e-6:
-                        y_int = b_i / a2
-                        if 0 <= y_int <= max_bound: vertices.append((0.0, round(y_int, 2)))
-                    if abs(a1) > 1e-6:
-                        x_int = b_i / a1
-                        if 0 <= x_int <= max_bound: vertices.append((round(x_int, 2), 0.0))
-                
-                for i in range(int(num_cons)):
-                    for j in range(i + 1, int(num_cons)):
-                        A_mat = np.array([[A_rows[i][0], A_rows[i][1]], [A_rows[j][0], A_rows[j][1]]])
-                        b_vec = np.array([b_vals[i], b_vals[j]])
-                        try:
-                            pt = np.linalg.solve(A_mat, b_vec)
-                            if 0 <= pt[0] <= max_bound and 0 <= pt[1] <= max_bound:
-                                vertices.append((round(pt[0], 2), round(pt[1], 2)))
-                        except:
-                            pass
-                
-                # Filter strictly feasible vertices
-                valid_verts = []
-                for pt in set(vertices):
-                    is_feas = True
-                    if pt[0] < -1e-4 or pt[1] < -1e-4: is_feas = False
-                    for i in range(int(num_cons)):
-                        val = A_rows[i][0]*pt[0] + A_rows[i][1]*pt[1]
-                        if signs[i] == "<=" and val > b_vals[i] + 1e-3: is_feas = False
-                        elif signs[i] == ">=" and val < b_vals[i] - 1e-3: is_feas = False
-                        elif signs[i] == "=" and not np.isclose(val, b_vals[i], atol=1e-2): is_feas = False
-                    if is_feas: valid_verts.append(pt)
-
-                # Plot Corner Points
-                if valid_verts:
-                    vx, vy = zip(*valid_verts)
+        st.divider()
+        st.markdown("### 📈 Feasible Region, Constraints & Corner Points Visualization")
+        if int(num_vars) == 2:
+            max_bound = max(max(b_vals) * 1.4, 12.0)
+            x1_vals = np.linspace(0, max_bound, 300)
+            x2_vals = np.linspace(0, max_bound, 300)
+            X1, X2 = np.meshgrid(x1_vals, x2_vals)
+            Z_space = c_vals[0] * X1 + c_vals[1] * X2
+            feasible = (X1 >= 0) & (X2 >= 0)
+            
+            for i in range(int(num_cons)):
+                lhs = A_rows[i][0] * X1 + A_rows[i][1] * X2
+                if signs[i] == "<=": feasible &= (lhs <= b_vals[i] + 1e-5)
+                elif signs[i] == ">=": feasible &= (lhs >= b_vals[i] - 1e-5)
+                else: feasible &= np.isclose(lhs, b_vals[i], atol=0.15)
+            Z_space[~feasible] = np.nan
+            
+            fig = go.Figure()
+            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
+            
+            for i in range(int(num_cons)):
+                a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
+                if abs(a2) > 1e-6:
+                    y_line = (b_i - a1*x1_vals)/a2
+                    valid_mask = (y_line >= 0) & (y_line <= max_bound)
                     fig.add_trace(go.Scatter(
-                        x=vx, y=vy, mode='markers+text',
-                        text=[f"({p[0]}, {p[1]})" for p in valid_verts],
-                        textposition="top right",
-                        marker=dict(size=10, color='#ffffff', line=dict(width=2, color='#38bdf8')),
-                        name="Corner Points (Vertices)"
+                        x=x1_vals[valid_mask], y=y_line[valid_mask],
+                        mode='lines', name=f'Constraint {i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}',
+                        line=dict(color=colors[i%len(colors)], width=3)
                     ))
 
-                if status == "Optimal":
-                    fig.add_trace(go.Scatter(
-                        x=[sol[0]], y=[sol[1]], mode='markers+text',
-                        text=[f"Optimal Z*={final_z:.1f}"], textposition="bottom left",
-                        marker=dict(size=14, color='#10b981', symbol='star', line=dict(width=2, color='white')),
-                        name="Optimal Solution"
-                    ))
+            fig.add_trace(go.Contour(x=x1_vals, y=x2_vals, z=Z_space, colorscale='Plasma', showscale=True, opacity=0.8))
+            
+            vertices = [(0.0, 0.0)]
+            for i in range(int(num_cons)):
+                a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
+                if abs(a2) > 1e-6:
+                    y_int = b_i / a2
+                    if 0 <= y_int <= max_bound: vertices.append((0.0, round(y_int, 2)))
+                if abs(a1) > 1e-6:
+                    x_int = b_i / a1
+                    if 0 <= x_int <= max_bound: vertices.append((round(x_int, 2), 0.0))
+            
+            for i in range(int(num_cons)):
+                for j in range(i + 1, int(num_cons)):
+                    A_mat = np.array([[A_rows[i][0], A_rows[i][1]], [A_rows[j][0], A_rows[j][1]]])
+                    b_vec = np.array([b_vals[i], b_vals[j]])
+                    try:
+                        pt = np.linalg.solve(A_mat, b_vec)
+                        if 0 <= pt[0] <= max_bound and 0 <= pt[1] <= max_bound:
+                            vertices.append((round(pt[0], 2), round(pt[1], 2)))
+                    except:
+                        pass
+            
+            valid_verts = []
+            for pt in set(vertices):
+                is_feas = True
+                if pt[0] < -1e-4 or pt[1] < -1e-4: is_feas = False
+                for i in range(int(num_cons)):
+                    val = A_rows[i][0]*pt[0] + A_rows[i][1]*pt[1]
+                    if signs[i] == "<=" and val > b_vals[i] + 1e-3: is_feas = False
+                    elif signs[i] == ">=" and val < b_vals[i] - 1e-3: is_feas = False
+                    elif signs[i] == "=" and not np.isclose(val, b_vals[i], atol=1e-2): is_feas = False
+                if is_feas: valid_verts.append(pt)
 
-                fig.update_layout(
-                    xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
-                    xaxis_range=[0, max_bound], yaxis_range=[0, max_bound],
-                    template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(15,23,42,0.6)',
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("💡 Graphical visualization is optimized for 2 decision variables.")
+            if valid_verts:
+                vx, vy = zip(*valid_verts)
+                fig.add_trace(go.Scatter(
+                    x=vx, y=vy, mode='markers+text',
+                    text=[f"({p[0]}, {p[1]})" for p in valid_verts],
+                    textposition="top right",
+                    marker=dict(size=11, color='#ffffff', line=dict(width=2, color='#38bdf8')),
+                    name="Corner Points (Vertices)"
+                ))
+
+            if status == "Optimal":
+                fig.add_trace(go.Scatter(
+                    x=[sol[0]], y=[sol[1]], mode='markers+text',
+                    text=[f"Optimal Z*={final_z:.1f}"], textposition="bottom left",
+                    marker=dict(size=15, color='#10b981', symbol='star', line=dict(width=2, color='white')),
+                    name="Optimal Solution"
+                ))
+
+            fig.update_layout(
+                xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
+                xaxis_range=[0, max_bound], yaxis_range=[0, max_bound],
+                template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(15,23,42,0.6)',
+                height=600
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("💡 Graphical visualization is optimized for 2 decision variables.")
 
     # ------------------------------------------
     # 2. DUAL SIMPLEX METHOD
@@ -407,10 +402,10 @@ else:
                 st.success(f"Leaving Variable selected: **Row {'1' if rhs1 < rhs2 else '2'}** (Most negative RHS).")
 
     # ------------------------------------------
-    # 3. BRANCH AND BOUND (Flexible Inputs & Notebook Tree Style)
+    # 3. BRANCH AND BOUND
     # ------------------------------------------
     elif problem == "Branch and Bound":
-        st.markdown("### ⚙️ Branch and Bound Flexible Configuration")
+        st.markdown("### ⚙️ Branch and Bound Configuration")
         bb1, bb2 = st.columns(2)
         with bb1:
             st.markdown("**Number of Objective Variables**")
@@ -423,10 +418,10 @@ else:
         bc1, bc2 = st.columns(2)
         with bc1:
             c1 = st.number_input("Objective Coefficient c₁", value=1.0)
-            x1_relax = st.number_input("Relaxed Optimal x₁*", value=1.4, step=0.1, help="e.g. 7/5 = 1.4")
+            x1_relax = st.number_input("Relaxed Optimal x₁*", value=1.4, step=0.1)
         with bc2:
             c2 = st.number_input("Objective Coefficient c₂", value=4.0)
-            x2_relax = st.number_input("Relaxed Optimal x₂*", value=1.75, step=0.05, help="e.g. 7/4 = 1.75")
+            x2_relax = st.number_input("Relaxed Optimal x₂*", value=1.75, step=0.05)
 
         frac1 = not np.isclose(x1_relax, round(x1_relax), atol=1e-5)
         frac2 = not np.isclose(x2_relax, round(x2_relax), atol=1e-5)
@@ -483,12 +478,9 @@ else:
                 dot = graphviz.Digraph()
                 dot.attr(bgcolor='transparent', rankdir='TB')
                 dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true')
-                
-                # Decision Tree matching your notebook photo structure
                 dot.node('P0', label=f'Root LP\nmax Z = {z_relax:.2f}\nx₁={x1_relax}, x₂={x2_relax}', fillcolor='#6366f1')
                 dot.node('P1', label=f'Subproblem 1\nAdd {branch_var} ≤ {floor_v}\nInfeasible / Bound', fillcolor='#ef4444')
                 dot.node('P2', label=f'Subproblem 2\nAdd {branch_var} ≥ {ceil_v}\nOptimal Integer Found', fillcolor='#10b981')
-                
                 dot.edge('P0', 'P1', label=f' {branch_var} ≤ {floor_v}', color='white', fontcolor='white')
                 dot.edge('P0', 'P2', label=f' {branch_var} ≥ {ceil_v}', color='white', fontcolor='white')
                 st.graphviz_chart(dot, use_container_width=True)
@@ -559,11 +551,11 @@ else:
                 st.markdown("""
                 **State Transition Breakdown (Notebook Match):**
                 * Start at node **A**
-                * $A \\rightarrow B$ (cost 10)[span_1](start_span)[span_1](end_span)
-                * $B \\rightarrow D$ (cost 10)[span_2](start_span)[span_2](end_span)
-                * $D \\rightarrow C$ (cost 9)[span_3](start_span)[span_3](end_span)
-                * $C \\rightarrow A$ (cost 6)[span_4](start_span)[span_4](end_span)
-                * **Total Cost** = $10 + 10 + 9 + 6 = 35$[span_5](start_span)[span_5](end_span)
+                * $A \\rightarrow B$ (cost 10)[span_0](start_span)[span_0](end_span)
+                * $B \\rightarrow D$ (cost 10)[span_1](start_span)[span_1](end_span)
+                * $D \\rightarrow C$ (cost 9)[span_2](start_span)[span_2](end_span)
+                * $C \\rightarrow A$ (cost 6)[span_3](start_span)[span_3](end_span)
+                * **Total Cost** = $10 + 10 + 9 + 6 = 35$[span_4](start_span)[span_4](end_span)
                 """)
             with col_res2:
                 st.markdown("### 🌳 State-Space Decision Tree")
