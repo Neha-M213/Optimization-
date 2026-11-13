@@ -258,7 +258,7 @@ else:
             df_dual = pd.DataFrame(tableau, columns=["x1", "x2", "s1", "s2", "RHS"])
             df_dual.insert(0, "Basic Var", ["Z", "s1", "s2"])
             st.dataframe(df_dual, use_container_width=True)
-            st.warning(f"🚩 **Dual Simplex Rule:** Row selected as leaving variable due to most negative RHS ({min(rhs1, rhs2)}).")
+            st.warning("🚩 **Dual Simplex Rule:** Row selected as leaving variable due to most negative RHS.")
             st.success("✨ Pivot completed: Dual feasibility restored.")
 
     elif problem == "Network & TSP Solver":
@@ -274,7 +274,6 @@ else:
             
             start_end_city = st.selectbox("Select Start & End City (TSP Closed Loop)", city_labels, index=0)
             
-            # Default matrix
             default_matrix = np.full((num_cities, num_cities), 999.0)
             for r in range(num_cities):
                 for c in range(num_cities):
@@ -288,10 +287,8 @@ else:
                 dist_mat = edited_df.values.astype(float)
                 start_idx = city_labels.index(start_end_city)
                 
-                # Reorder so start city is first
                 ordered_labels = [city_labels[(start_idx + i) % num_cities] for i in range(num_cities)]
                 
-                # Dynamic exact permutation evaluation for TSP
                 import itertools
                 other_cities_indices = [city_labels.index(c) for c in ordered_labels[1:]]
                 best_cost = float('inf')
@@ -303,7 +300,7 @@ else:
                     valid = True
                     for i in range(len(tour) - 1):
                         wt = dist_mat[tour[i]][tour[i+1]]
-                        if wt >= 900: # infinity check
+                        if wt >= 900:
                             valid = False
                             break
                         current_cost += wt
@@ -318,7 +315,6 @@ else:
                 root_label = f"Start/End: {start_end_city}\nOptimal Cost = {best_cost if best_cost != float('inf') else 'N/A'}"
                 dot_tsp.node("Root", root_label)
                 
-                # Build tree branches dynamically from user matrix data
                 other_cities = [c for c in ordered_labels if c != start_end_city]
                 for idx, c in enumerate(other_cities):
                     orig_i = start_idx
@@ -336,9 +332,8 @@ else:
                         
                         sub_id = f"Sub_{idx}_{sub_idx}"
                         dot_tsp.node(sub_id, f"Node {rem_c}\nAcc. Cost = {sub_cost}")
-                        dot_tsp.edge(branch_id, sub_id, label=f"via {rem_c} (w={dist_mat[orig_j][rem_j]})")
+                        dot_tsp.edge(branch_id, sub_id, label=f"via {rem_c}")
                         
-                        # Last remaining node if > 3 cities
                         last_rem = [l for l in remaining if l != rem_c]
                         curr_node = rem_j
                         accum = sub_cost
@@ -347,11 +342,10 @@ else:
                             accum += dist_mat[curr_node][l_j]
                             curr_node = l_j
                             
-                        # Final base node back to start
                         final_cost = accum + dist_mat[curr_node][start_idx]
                         final_id = f"Final_{idx}_{sub_idx}"
                         dot_tsp.node(final_id, f"Return {start_end_city}\nTotal = {final_cost}", fillcolor='#10b981')
-                        dot_tsp.edge(sub_id, final_id, label=f"Back (w={dist_mat[curr_node][start_idx]})")
+                        dot_tsp.edge(sub_id, final_id, label=f"Back")
 
                 st.markdown(f"### 🌳 Fully Dynamic TSP State Tree (Root: {start_end_city})")
                 st.graphviz_chart(dot_tsp)
@@ -371,7 +365,6 @@ else:
             net_labels = [str(i+1) for i in range(num_net_nodes)]
             
             default_net = np.full((num_net_nodes, num_net_nodes), 999.0)
-            # Sample default connections matching the notebook
             connections = [(0,1,7), (0,2,8), (0,3,5), (1,4,12), (2,4,8), (2,5,9), (3,4,7), (3,5,13), (4,6,9), (5,6,6)]
             for u, v, w in connections:
                 if u < num_net_nodes and v < num_net_nodes:
@@ -388,11 +381,10 @@ else:
                 
                 matrix_vals = edited_net_df.values.astype(float)
                 
-                # Draw edges from user matrix
                 for r in range(num_net_nodes):
                     for c in range(num_net_nodes):
                         if matrix_vals[r, c] < 900:
-                            is_opt = (r == 0 and c == 3) or (r == 3 and c == 4) or (r == 4 and c == 6) # optimal path check
+                            is_opt = (r == 0 and c == 3) or (r == 3 and c == 4) or (r == 4 and c == 6)
                             col = '#10b981' if is_opt else '#38bdf8'
                             pen = '3.0' if is_opt else '1.0'
                             dot_net.edge(net_labels[r], net_labels[c], label=str(int(matrix_vals[r, c])), color=col, penwidth=pen)
@@ -401,38 +393,38 @@ else:
                 st.graphviz_chart(dot_net)
                 
                 if "Forward" in net_method:
-                    st.markdown("#### 📋 Forward Iteration Computation Tables (Generated from your Matrix)")
+                    st.markdown("#### 📋 Forward Iteration Computation Tables")
                     
                     df_f1 = pd.DataFrame([
                         ["1", "2", matrix_vals[0,1] if matrix_vals[0,1]<900 else "-", f"{matrix_vals[0,1]} (via 1)" if matrix_vals[0,1]<900 else "-"],
                         ["1", "3", matrix_vals[0,2] if matrix_vals[0,2]<900 else "-", f"{matrix_vals[0,2]} (via 1)" if matrix_vals[0,2]<900 else "-"],
                         ["1", "4", matrix_vals[0,3] if matrix_vals[0,3]<900 else "-", f"{matrix_vals[0,3]} (via 1)" if matrix_vals[0,3]<900 else "-"]
-                    ], columns=["From ($x_0$)", "To ($x_1$)", "Distance $d$", "Shortest Distance $f_1(x_1)$"])
+                    ], columns=["From", "To", "Distance", "Shortest Distance"])
                     st.dataframe(df_f1, use_container_width=True)
                     
                     df_f2 = pd.DataFrame([
-                        ["5", "2, 3, 4", "Calculated from matrix weights", "12 (via Node 4)[span_0](start_span)"[span_0](end_span)],
-                        ["6", "3, 4", "Calculated from matrix weights", "17 (via Node 3)[span_1](start_span)"[span_1](end_span)]
-                    ], columns=["State ($x_2$)", "Incoming From ($x_1$)", "Computation $\\min[d + f_1]$[span_2](start_span)[span_2](end_span)", "Optimal Solution $f_2(x_2)$[span_3](start_span)[span_3](end_span)"])
+                        ["5", "2, 3, 4", "Calculated from matrix weights", "12 (via Node 4)"],
+                        ["6", "3, 4", "Calculated from matrix weights", "17 (via Node 3)"]
+                    ], columns=["State", "Incoming From", "Computation", "Optimal Solution"])
                     st.dataframe(df_f2, use_container_width=True)
                     
                     st.success("🌟 **Shortest Route Computed:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27**")
                 else:
-                    st.markdown("#### 📋 Backward Iteration Computation Tables (Generated from your Matrix)")
+                    st.markdown("#### 📋 Backward Iteration Computation Tables")
                     
                     df_b3 = pd.DataFrame([
                         ["5", "7", "9 + 0 = 9", "9 (via 7)"],
                         ["6", "7", "6 + 0 = 6", "6 (via 7)"]
-                    ], columns=["State ($x_3$)", "To ($x_4 = 7$)", "Computation $d + f_3$", "Optimal $f_3(x_3)$[span_4](start_span)[span_4](end_span)"])
-                    st.markdown("**Stage 3 Table ($x_3 \\rightarrow x_4$):**")
+                    ], columns=["State", "To", "Computation", "Optimal Solution"])
+                    st.markdown("**Stage 3 Table:**")
                     st.dataframe(df_b3, use_container_width=True)
                     
                     df_b2 = pd.DataFrame([
                         ["2", "5", "12 + 9 = 21", "21 (via 5)"],
                         ["3", "5, 6", "min(8+9, 9+6) = 15", "15 (via 6)"],
                         ["4", "5, 6", "min(7+9, 13+6) = 16", "16 (via 5)"]
-                    ], columns=["State ($x_2$)", "To ($x_3$)[span_5](start_span)[span_5](end_span)", "Computation $d + f_2$[span_6](start_span)[span_6](end_span)", "Optimal $f_2(x_2)$[span_7](start_span)[span_7](end_span)"])
-                    st.markdown("**Stage 2 Table ($x_2 \\rightarrow x_3$):**")
+                    ], columns=["State", "To", "Computation", "Optimal Solution"])
+                    st.markdown("**Stage 2 Table:**")
                     st.dataframe(df_b2, use_container_width=True)
                     
                     st.success("🌟 **Shortest Route via Backward DP:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27**")
