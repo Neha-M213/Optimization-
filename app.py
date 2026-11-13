@@ -501,7 +501,7 @@ else:
             st.graphviz_chart(dot_bb)
             st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
 
-            # --- NEW: GEOMETRIC SUBPROBLEM & STRIP DELETION VISUALIZATION GALLERY ---
+            # --- SUBPROBLEM GEOMETRY & STRIP DELETION GALLERY ---
             st.divider()
             st.markdown("### 📐 Subproblem Geometry, Strip Deletion & LPP Construction Gallery")
             st.caption("Each subproblem node below displays its updated constraint set, strip deletion cuts, labeled corner points, and feasible region polygon.")
@@ -520,11 +520,14 @@ else:
                 sub_signs = nd["signs"]
                 sub_b = nd["b"]
 
-                with st.expander(f"📌 Subproblem {node_id} (Status: {n_status} | Z = {n_z:.2f if n_status=='Optimal' else 0})", expanded=(idx==0)):
+                # Fixed: Safely evaluate formatting outside f-string to prevent ValueError
+                z_str = f"{n_z:.2f}" if n_status == "Optimal" else "N/A"
+                expander_label = f"📌 Subproblem {node_id} — Status: {n_status} | Z = {z_str}"
+
+                with st.expander(expander_label, expanded=(idx == 0)):
                     col_g1, col_g2 = st.columns([3, 2])
                     
                     with col_g1:
-                        # Build Plotly Subproblem Feasible Region Graph
                         fig_sub = go.Figure()
                         valid_verts = get_2d_feasible_polygon(sub_A, sub_signs, sub_b, max_bound)
                         
@@ -533,7 +536,6 @@ else:
                             poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
                             fig_sub.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(56, 189, 248, 0.25)", line=dict(color="#38bdf8", width=2), name=f"Feasible Region {node_id}"))
 
-                        # Plot all constraints including branching cuts
                         for c_idx in range(len(sub_b)):
                             a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
                             s_sign = sub_signs[c_idx]
@@ -558,12 +560,10 @@ else:
                                 if 0 <= x_const <= max_bound:
                                     fig_sub.add_trace(go.Scatter(x=[x_const, x_const], y=[0, max_bound], mode="lines", name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)))
 
-                        # Plot corner points
                         if valid_verts:
                             vx, vy = zip(*valid_verts)
                             fig_sub.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"({p[0]}, {p[1]})" for p in valid_verts], textposition="top right", marker=dict(size=10, color="#ffffff", line=dict(width=2, color="#f472b6")), name="Corner Points"))
 
-                        # Plot subproblem solution vertex
                         if n_status == "Optimal":
                             fig_sub.add_trace(go.Scatter(x=[n_sol[0]], y=[n_sol[1]], mode="markers+text", text=[f"{node_id} Sol: ({n_sol[0]:.2f}, {n_sol[1]:.2f})"], textposition="bottom right", marker=dict(size=14, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Subproblem Solution"))
 
@@ -592,7 +592,7 @@ else:
                             st.error(f"**Subproblem Status:** {n_status}\n\n*This branch is pruned/infeasible.*")
 
     # ------------------------------------------
-    # 4. NETWORK & TSP SOLVER (Stagewise + Unrolled Bellman-Held-Karp TSP)
+    # 4. NETWORK & TSP SOLVER
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Network & Traveling Salesman Problem (TSP) Studio")
