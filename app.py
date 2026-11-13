@@ -72,13 +72,12 @@ def go_home():
     st.session_state.selected_problem = None
 
 # ==========================================
-# HELPER: BIG-M SIMPLEX ENGINE (NOTEBOOK TABLEAU FORMAT)
+# HELPER: BIG-M SIMPLEX ENGINE (NOTEBOOK FORMAT)
 # ==========================================
 def build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None):
     num_cons = len(basis_indices)
     cb = cost_row[basis_indices]
     
-    # Format C_j header row (matching notebook C_j row above variables)
     cj_display = ["", "C_j ->", ""] + [round(float(val), 3) if abs(val) < 1e4 else ("-M" if val < 0 else "M") for val in cost_row] + [""]
     
     rows = [cj_display]
@@ -164,12 +163,6 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
                 if b_idx in artificial_indices and rhs[idx_pos] > 1e-6:
                     status = "Infeasible"
                     special_flags.add(f"🚩 **Infeasibility:** Artificial variable {var_names[b_idx]} remains positive in basis (RHS = {rhs[idx_pos]:.4f}).")
-            
-            if status == "Optimal":
-                non_basic = [j for j in range(len(var_names)) if j not in basis_indices and j not in artificial_indices]
-                alt_vars = [var_names[j] for j in non_basic if np.isclose(cj_zj[j], 0.0, atol=1e-7)]
-                if alt_vars:
-                    special_flags.add(f"💡 **Alternative Optima:** Non-basic variable(s) {alt_vars} have C_j - Z_j = 0.")
             break
             
         entering_col = int(np.argmax(cj_zj))
@@ -502,7 +495,7 @@ else:
             st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
 
     # ------------------------------------------
-    # 4. NETWORK & TSP SOLVER (Stagewise + Matrix)
+    # 4. NETWORK & TSP SOLVER (Stagewise + Matrix + Bottom-Up TSP Tree)
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Network & Traveling Salesman Problem (TSP) Studio")
@@ -526,7 +519,7 @@ else:
             matrix_df = pd.DataFrame(default_matrix, columns=city_labels, index=city_labels)
             edited_df = st.data_editor(matrix_df, use_container_width=True)
             
-            if st.button("Compute Optimal TSP Tour & Dynamic State Tree"):
+            if st.button("Compute Optimal TSP Tour & Bottom-Up State Tree"):
                 dist_mat = edited_df.values.astype(float)
                 start_idx = city_labels.index(start_end_city)
                 
@@ -535,7 +528,7 @@ else:
                 import itertools
                 other_cities_indices = [city_labels.index(c) for c in ordered_labels[1:]]
                 best_cost = float('inf')
-                best_path = []
+                best_tour_indices = []
                 
                 for perm in itertools.permutations(other_cities_indices):
                     tour = [start_idx] + list(perm) + [start_idx]
@@ -549,52 +542,96 @@ else:
                         current_cost += wt
                     if valid and current_cost < best_cost:
                         best_cost = current_cost
-                        best_path = tour
+                        best_tour_indices = tour
 
-                dot_tsp = graphviz.Digraph(comment="TSP State Tree")
-                dot_tsp.attr(bgcolor="transparent", rankdir="TB")
-                dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#ef4444')
+                best_tour_pairs = set(zip(best_tour_indices[:-1], best_tour_indices[1:]))
+
+                # Build Bottom-Up State Tree (Root at top, branching down to bottom return leaves)
+                dot_tsp = graphviz.Digraph(comment="TSP Bottom-Up State Tree")
+                dot_tsp.attr(bgcolor="transparent", rankdir="TB", size="12,12")
+                dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#1e293b')
+                dot_tsp.attr('edge', fontname='Helvetica', fontsize='11')
                 
-                root_label = f"Start/End: {start_end_city}\nOptimal Cost = {best_cost if best_cost != float('inf') else 'N/A'}"
-                dot_tsp.node("Root", root_label)
+                root_id = f"Root_{start_end_city}"
+                dot_tsp.node(root_id, label=f"Start: {start_end_city}\n(Root)", fillcolor='#3b82f6')
                 
                 other_cities = [c for c in ordered_labels if c != start_end_city]
-                for idx, c in enumerate(other_cities):
-                    orig_i = start_idx
-                    orig_j = city_labels.index(c)
-                    cost_val = dist_mat[orig_i][orig_j]
-                    
-                    branch_id = f"Branch_{idx}"
-                    dot_tsp.node(branch_id, f"Node {c}\nCost = {cost_val}")
-                    dot_tsp.edge("Root", branch_id, label=f"{start_end_city}->{c} (w={cost_val})")
-                    
-                    remaining = [rem for rem in other_cities if rem != c]
-                    for sub_idx, rem_c in enumerate(remaining):
-                        rem_j = city_labels.index(rem_c)
-                        sub_cost = cost_val + dist_mat[orig_j][rem_j]
-                        
-                        sub_id = f"Sub_{idx}_{sub_idx}"
-                        dot_tsp.node(sub_id, f"Node {rem_c}\nAcc. Cost = {sub_cost}")
-                        dot_tsp.edge(branch_id, sub_id, label=f"via {rem_c}")
-                        
-                        last_rem = [l for l in remaining if l != rem_c]
-                        curr_node = rem_j
-                        accum = sub_cost
-                        for l_city in last_rem:
-                            l_j = city_labels.index(l_city)
-                            accum += dist_mat[curr_node][l_j]
-                            curr_node = l_j
-                            
-                        final_cost = accum + dist_mat[curr_node][start_idx]
-                        final_id = f"Final_{idx}_{sub_idx}"
-                        dot_tsp.node(final_id, f"Return {start_end_city}\nTotal = {final_cost}", fillcolor='#10b981')
-                        dot_tsp.edge(sub_id, final_id, label=f"Back")
-
-                st.markdown(f"### 🌳 Fully Dynamic TSP State Tree (Root: {start_end_city})")
-                st.graphviz_chart(dot_tsp)
                 
-                if best_path:
-                    path_str = " -> ".join([city_labels[i] for i in best_path])
+                # Level 1 branches from Root
+                for idx, c1 in enumerate(other_cities):
+                    j1 = city_labels.index(c1)
+                    w1 = dist_mat[start_idx][j1]
+                    node_id_1 = f"L1_{c1}_{idx}"
+                    
+                    is_opt_edge_1 = (start_idx, j1) in best_tour_pairs
+                    col_1 = '#10b981' if is_opt_edge_1 else '#475569'
+                    w_1 = '3.5' if is_opt_edge_1 else '1.0'
+                    
+                    dot_tsp.node(node_id_1, label=f"Visit {c1}\nCost: {w1}", fillcolor='#2563eb' if not is_opt_edge_1 else '#059669')
+                    dot_tsp.edge(root_id, node_id_1, label=f"{start_end_city} → {c1} (w={w1})", color=col_1, penwidth=w_1)
+                    
+                    remaining_after_1 = [rem for rem in other_cities if rem != c1]
+                    
+                    # Level 2 branches
+                    for sub_idx, c2 in enumerate(remaining_after_1):
+                        j2 = city_labels.index(c2)
+                        w2 = w1 + dist_mat[j1][j2]
+                        node_id_2 = f"L2_{c1}_{c2}_{sub_idx}"
+                        
+                        is_opt_edge_2 = (j1, j2) in best_tour_pairs
+                        col_2 = '#10b981' if is_opt_edge_2 else '#475569'
+                        w_2 = '3.5' if is_opt_edge_2 else '1.0'
+                        
+                        dot_tsp.node(node_id_2, label=f"Then {c2}\nAcc: {w2}", fillcolor='#2563eb' if not is_opt_edge_2 else '#059669')
+                        dot_tsp.edge(node_id_1, node_id_2, label=f"{c1} → {c2} (w={dist_mat[j1][j2]})", color=col_2, penwidth=w_2)
+                        
+                        last_remaining = [l for l in remaining_after_1 if l != c2]
+                        
+                        # Bottom Leaf / Return Node (Bottom-up completion)
+                        if len(last_remaining) == 0:
+                            # 3-city or 4-city final return
+                            final_city_j = j2
+                            final_cost = w2 + dist_mat[final_city_j][start_idx]
+                            final_node_id = f"Leaf_{c1}_{c2}"
+                            
+                            is_opt_return = (final_city_j, start_idx) in best_tour_pairs
+                            col_ret = '#10b981' if is_opt_return else '#475569'
+                            w_ret = '3.5' if is_opt_return else '1.0'
+                            
+                            dot_tsp.node(final_node_id, label=f"Return {start_end_city}\nTotal = {final_cost}", fillcolor='#10b981' if final_cost == best_cost else '#1e293b')
+                            dot_tsp.edge(node_id_2, final_node_id, label=f"{c2} → {start_end_city} (w={dist_mat[final_city_j][start_idx]}) [Complete Tour]", color=col_ret, penwidth=w_ret)
+                        else:
+                            for l_idx, c3 in enumerate(last_remaining):
+                                j3 = city_labels.index(c3)
+                                w3 = w2 + dist_mat[j2][j3]
+                                node_id_3 = f"L3_{c1}_{c2}_{c3}"
+                                
+                                is_opt_edge_3 = (j2, j3) in best_tour_pairs
+                                col_3 = '#10b981' if is_opt_edge_3 else '#475569'
+                                w_3 = '3.5' if is_opt_edge_3 else '1.0'
+                                
+                                dot_tsp.node(node_id_3, label=f"Then {c3}\nAcc: {w3}", fillcolor='#2563eb' if not is_opt_edge_3 else '#059669')
+                                dot_tsp.edge(node_id_2, node_id_3, label=f"{c2} → {c3} (w={dist_mat[j2][j3]})", color=col_3, penwidth=w_3)
+                                
+                                final_cost = w3 + dist_mat[j3][start_idx]
+                                final_node_id = f"Leaf_{c1}_{c2}_{c3}"
+                                
+                                is_opt_return = (j3, start_idx) in best_tour_pairs
+                                col_ret = '#10b981' if is_opt_return else '#475569'
+                                w_ret = '3.5' if is_opt_return else '1.0'
+                                
+                                dot_tsp.node(final_node_id, label=f"Return {start_end_city}\nTotal = {final_cost}", fillcolor='#10b981' if final_cost == best_cost else '#1e293b')
+                                dot_tsp.edge(node_id_3, final_node_id, label=f"{c3} → {start_end_city} (w={dist_mat[j3][start_idx]}) [Complete Tour]", color=col_ret, penwidth=w_ret)
+
+                st.markdown(f"### 🌳 Bottom-Up TSP State Tree (Root: {start_end_city})")
+                st.caption("The tree flows downwards from the start city, calculating accumulated costs down to the bottom return leaves. Optimal tour branches and arrows are highlighted in bold green.")
+                
+                # Zoomable container wrapper
+                with st.expander("🔍 Click to Expand / Zoom TSP State Tree", expanded=True):
+                    st.graphviz_chart(dot_tsp)
+                
+                if best_tour_indices:
+                    path_str = " → ".join([city_labels[i] for i in best_tour_indices])
                     st.success(f"🏆 **Optimal Closed TSP Tour:** {path_str} | **Total Minimum Distance = {best_cost}**")
                 else:
                     st.error("No valid complete tour found with the given distance matrix weights.")
@@ -724,7 +761,6 @@ else:
                     total_min_cost = f_cost.get(0, float('inf'))
                     
                 else:
-                    # Strictly stagewise Forward Iteration (no same-stage transitions)
                     source = 0
                     sink = num_net_nodes - 1
                     
