@@ -517,7 +517,6 @@ else:
             
             start_end_city = st.selectbox("Select Start & End City (TSP Closed Loop)", city_labels, index=0)
             
-            # Default values matching your notebook example
             default_matrix = np.full((num_cities, num_cities), 999.0)
             preset_vals = [
                 [0, 10, 15, 20],
@@ -538,20 +537,17 @@ else:
                 n = num_cities
                 other_cities = [i for i in range(n) if i != start_idx]
                 
-                # Memoization dictionary for DP: memo[(i, frozenset(S))] = (min_cost, best_next_city, state_id, label_text)
                 memo = {}
-                node_counter = 0
+                node_counter = [0]  # Fixed: using mutable container instead of nonlocal
                 
                 def dp_tsp(i, S):
-                    nonlocal node_counter
                     state = (i, frozenset(S))
                     if state in memo:
                         return memo[state]
                     
-                    state_id = f"n_{node_counter}"
-                    node_counter += 1
+                    state_id = f"n_{node_counter[0]}"
+                    node_counter[0] += 1
                     
-                    # Base case: empty subset S = Ø (return from city i to start city)
                     if not S:
                         cost = dist_mat[i][start_idx]
                         label = f"g({city_labels[i]}, Ø)\n= c_{city_labels[i]}{city_labels[start_idx]} = {int(cost)}"
@@ -571,7 +567,6 @@ else:
                             min_cost = total
                             best_next = j
                             
-                    # Format label matching notebook style: min(10 + 25, 15 + 25, ...) = 35
                     calc_strs = [calc[2] for calc in calculations]
                     calc_joined = ", ".join(calc_strs)
                     set_str = ", ".join(sorted([city_labels[j] for j in S]))
@@ -584,17 +579,14 @@ else:
                     memo[state] = (min_cost, best_next, state_id, label)
                     return memo[state]
 
-                # Run DP from start city with all other cities in S
                 all_S = frozenset(other_cities)
                 opt_cost, _, root_id, root_label = dp_tsp(start_idx, all_S)
                 
-                # Build Graphviz Digraph (Top-to-Bottom tree structure)
                 dot_tsp = graphviz.Digraph(comment="TSP DP State Tree")
                 dot_tsp.attr(bgcolor="transparent", rankdir="TB")
                 dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#1e293b', color='#38bdf8', penwidth='1.5')
                 dot_tsp.attr('edge', fontname='Helvetica', fontsize='10', color='#94a3b8')
                 
-                # Trace optimal path states
                 optimal_states = set()
                 curr_i = start_idx
                 curr_S = all_S
@@ -603,14 +595,12 @@ else:
                     optimal_states.add((curr_i, curr_S))
                     curr_i = nxt
                     curr_S = curr_S - {nxt}
-                optimal_states.add((curr_i, frozenset())) # base case
+                optimal_states.add((curr_i, frozenset()))
                 
-                # Add nodes and edges to graph
                 for state, (cost, best_nxt, s_id, label) in memo.items():
                     i_city, S_set = state
                     is_opt_node = state in optimal_states
                     
-                    # Styling matching notebook (Green/Blue nodes, Red borders for optimal path)
                     node_fill = '#059669' if is_opt_node and state != (start_idx, all_S) else ('#2563eb' if state == (start_idx, all_S) else '#1e293b')
                     node_border = '#ef4444' if is_opt_node else '#38bdf8'
                     pen_w = '3.0' if is_opt_node else '1.5'
@@ -632,7 +622,6 @@ else:
                 st.caption("🔍 **How to read:** The tree builds from base cases ($\emptyset$) at the bottom upwards to the root. **Red-bordered nodes and red bold arrows** highlight the optimal TSP tour path.")
                 st.graphviz_chart(dot_tsp)
                 
-                # Extract and display optimal tour sequence
                 tour_seq = [start_idx]
                 c_idx = start_idx
                 c_set = all_S
