@@ -357,102 +357,234 @@ else:
                     st.error("No valid complete tour found with the given distance matrix weights.")
 
         else:
-            st.markdown("#### 🔄 Fully Flexible Network Shortest Route Matrix")
-            net_method = st.selectbox("Select Iteration Method", ["Forward Iteration Method (Source -> Sink)", "Backward Iteration Method (Sink -> Source)"])
+            st.markdown("#### 🔄 Stagewise Network Shortest Route Studio")
+            net_method = st.selectbox("Select Stagewise Iteration Method", ["Backward Iteration Method (Sink -> Source)", "Forward Iteration Method (Source -> Sink)"])
             
-            st.markdown("##### Input Custom Network Adjacency / Stage Matrix:")
-            num_net_nodes = int(st.number_input("Number of Network Nodes", min_value=3, max_value=8, value=7, step=1))
+            st.markdown("##### 1. Define Network Nodes & Stage Mapping")
+            num_net_nodes = int(st.number_input("Total Number of Nodes", min_value=3, max_value=10, value=7, step=1))
             net_labels = [str(i+1) for i in range(num_net_nodes)]
             
+            # Stage configuration helper
+            st.markdown("Specify which stage each node belongs to (for proper column alignment in the diagram):")
+            stage_cols = st.columns(min(num_net_nodes, 4))
+            node_stages = {}
+            # Default stage heuristic (Stage 1: node 1, Last Stage: node N, middle split)
+            for i, node in enumerate(net_labels):
+                col_idx = i % len(stage_cols)
+                with stage_cols[col_idx]:
+                    default_stage = 1 if i == 0 else (3 if i == num_net_nodes - 1 else 2)
+                    node_stages[node] = st.number_input(f"Node {node} Stage", min_value=1, max_value=5, value=default_stage, key=f"stage_node_{node}")
+
+            st.markdown("##### 2. Network Adjacency Matrix (Edge Weights)")
+            st.info("Enter edge weights. Use `999` or `None` if no direct edge exists between nodes.")
+            
             default_net = np.full((num_net_nodes, num_net_nodes), 999.0)
-            connections = [(0,1,7), (0,2,8), (0,3,5), (1,4,12), (2,4,8), (2,5,9), (3,4,7), (3,5,13), (4,6,9), (5,6,6)]
-            for u, v, w in connections:
+            # Default sample graph matching user's notebook
+            default_connections = [
+                (0,1,5), (0,2,14), (0,3,6),
+                (1,2,6), (1,4,12), (1,5,12),
+                (2,3,7), (2,4,2), (2,5,9),
+                (3,5,9),
+                (4,6,4),
+                (5,6,4)
+            ]
+            for u, v, w in default_connections:
                 if u < num_net_nodes and v < num_net_nodes:
                     default_net[u, v] = w
                     
             net_df = pd.DataFrame(default_net, columns=net_labels, index=net_labels)
             edited_net_df = st.data_editor(net_df, use_container_width=True)
             
-            if st.button("Compute Network Shortest Route & Tables from Matrix"):
+            if st.button("Compute Stagewise Shortest Route & Tables"):
                 matrix_vals = edited_net_df.values.astype(float)
                 
-                # Dynamic Shortest Path Calculation via DP based on user matrix
-                # Assuming node 0 is source and num_net_nodes-1 is sink
-                source, sink = 0, num_net_nodes - 1
-                
-                # Forward DP computation from edited matrix
-                dp_dist = np.full(num_net_nodes, float('inf'))
-                dp_parent = np.full(num_net_nodes, -1)
-                dp_dist[source] = 0.0
-                
-                forward_stages_data = []
-                for u in range(num_net_nodes):
-                    if dp_dist[u] == float('inf') and u != source: continue
-                    for v in range(num_net_nodes):
-                        wt = matrix_vals[u, v]
-                        if wt < 900: # valid edge
-                            if dp_dist[u] + wt < dp_dist[v]:
-                                dp_dist[v] = dp_dist[u] + wt
-                                dp_parent[v] = u
-                            forward_stages_data.append([net_labels[u], net_labels[v], wt, dp_dist[v]])
+                if "Backward" in net_method:
+                    # Backward DP computation (Sink -> Source)
+                    sink = num_net_nodes - 1
+                    source = 0
+                    
+                    f_cost = {sink: 0.0}
+                    policy = {sink: None}
+                    
+                    # Group nodes by stages in reverse order
+                    stages_sorted = sorted(list(set(node_stages.values())), reverse=True)
+                    
+                    computation_tables = {}
+                    
+                    for stg in stages_sorted[1:]: # from sink stage backwards
+                        current_stage_nodes = [n for n, s in node_stages.items() if s == stg]
+                        stage_rows = []
+                        for node_str in current_stage_nodes:
+                            u_idx = net_labels.index(node_str)
+                            best_val = float('inf')
+                            best_nxt = None
+                            row_dict = {"State ($x_i$)": f"Node {node_str}"}
+                            
+                            for next_node_str in net_labels:
+                                v_idx = net_labels.index(next_node_str)
+                                wt = matrix_vals[u_idx, v_idx]
+                                if wt < 900 and v_idx in [net_labels.index(n) for n, s in node_stages.items() if s > stg]:
+                                    if v_idx in f_cost:
+                                        total_cost = wt + f_cost[v_idx]
+                                        row_dict[f"to {next_node_str}"] = f"{int(wt)} + {int(f_cost[v_idx])} = {int(total_cost)}"
+                                        if total_cost < best_val:
+                                            best_val = total_cost
+                                            best_nxt = next_node_str
+                                    else:
+                                        row_dict[f"to {next_node_str}"] = f"w={int(wt)} (Uncomputed)"
+                                else:
+                                    row_dict[f"to {next_node_str}"] = "—"
+                            
+                            if best_val != float('inf'):
+                                f_cost[u_idx] = best_val
+                                policy[u_idx] = best_nxt
+                                row_dict["Optimal $f(x)$"] = int(best_val)
+                                row_dict["Optimal Next"] = f"Node {best_nxt}"
+                            else:
+                                row_dict["Optimal $f(x)$"] = "—"
+                                row_dict["Optimal Next"] = "—"
+                                
+                            stage_rows.append(row_dict)
+                        computation_tables[stg] = pd.DataFrame(stage_rows)
 
-                # Reconstruct shortest path
-                curr = sink
-                shortest_path_nodes = []
-                while curr != -1:
-                    shortest_path_nodes.append(net_labels[curr])
-                    curr = int(dp_parent[curr])
-                shortest_path_nodes.reverse()
+                    # Compute Stage 1 (Source)
+                    source_nodes = [n for n, s in node_stages.items() if s == min(node_stages.values())]
+                    source_rows = []
+                    for node_str in source_nodes:
+                        u_idx = net_labels.index(node_str)
+                        best_val = float('inf')
+                        best_nxt = None
+                        row_dict = {"State ($x_i$)": f"Node {node_str}"}
+                        for next_node_str in net_labels:
+                            v_idx = net_labels.index(next_node_str)
+                            wt = matrix_vals[u_idx, v_idx]
+                            if wt < 900 and v_idx in f_cost:
+                                total_cost = wt + f_cost[v_idx]
+                                row_dict[f"to {next_node_str}"] = f"{int(wt)} + {int(f_cost[v_idx])} = {int(total_cost)}"
+                                if total_cost < best_val:
+                                    best_val = total_cost
+                                    best_nxt = next_node_str
+                            else:
+                                row_dict[f"to {next_node_str}"] = "—"
+                        f_cost[u_idx] = best_val
+                        policy[u_idx] = best_nxt
+                        row_dict["Optimal $f(x)$"] = int(best_val)
+                        row_dict["Optimal Next"] = f"Node {best_nxt}"
+                        source_rows.append(row_dict)
+                    computation_tables[min(node_stages.values())] = pd.DataFrame(source_rows)
 
-                dot_net = graphviz.Digraph(comment="Dynamic Custom Network Flow Graph")
+                    # Reconstruct path
+                    curr_idx = 0 # start node 1
+                    shortest_path = [net_labels[curr_idx]]
+                    while curr_idx in policy and policy[curr_idx] is not None:
+                        nxt_node = policy[curr_idx]
+                        shortest_path.append(nxt_node)
+                        curr_idx = net_labels.index(nxt_node)
+
+                    st.markdown("### 📋 Step-by-Step Backward Iteration Tables")
+                    for stg_num in sorted(computation_tables.keys(), reverse=True):
+                        st.markdown(f"**Stage {stg_num} Calculations**")
+                        st.dataframe(computation_tables[stg_num], use_container_width=True)
+
+                    total_min_cost = f_cost.get(0, float('inf'))
+                    
+                else:
+                    # Forward Iteration Method (Source -> Sink)
+                    source = 0
+                    sink = num_net_nodes - 1
+                    
+                    f_cost = {source: 0.0}
+                    policy = {source: None}
+                    
+                    stages_sorted = sorted(list(set(node_stages.values())))
+                    computation_tables = {}
+                    
+                    for stg in stages_sorted[1:]:
+                        current_stage_nodes = [n for n, s in node_stages.items() if s == stg]
+                        stage_rows = []
+                        for node_str in current_stage_nodes:
+                            v_idx = net_labels.index(node_str)
+                            best_val = float('inf')
+                            best_prev = None
+                            row_dict = {"State ($x_i$)": f"Node {node_str}"}
+                            
+                            for prev_node_str in net_labels:
+                                u_idx = net_labels.index(prev_node_str)
+                                wt = matrix_vals[u_idx, v_idx]
+                                if wt < 900 and u_idx in f_cost:
+                                    total_cost = f_cost[u_idx] + wt
+                                    row_dict[f"from {prev_node_str}"] = f"{int(f_cost[u_idx])} + {int(wt)} = {int(total_cost)}"
+                                    if total_cost < best_val:
+                                        best_val = total_cost
+                                        best_prev = prev_node_str
+                                else:
+                                    row_dict[f"from {prev_node_str}"] = "—"
+                            
+                            if best_val != float('inf'):
+                                f_cost[v_idx] = best_val
+                                policy[v_idx] = best_prev
+                                row_dict["Optimal $f(x)$"] = int(best_val)
+                                row_dict["Optimal Prev"] = f"Node {best_prev}"
+                            else:
+                                row_dict["Optimal $f(x)$"] = "—"
+                                row_dict["Optimal Prev"] = "—"
+                            stage_rows.append(row_dict)
+                        computation_tables[stg] = pd.DataFrame(stage_rows)
+
+                    # Reconstruct path backwards from sink
+                    curr_idx = num_net_nodes - 1
+                    shortest_path = [net_labels[curr_idx]]
+                    while curr_idx in policy and policy[curr_idx] is not None:
+                        prev_node = policy[curr_idx]
+                        shortest_path.insert(0, prev_node)
+                        curr_idx = net_labels.index(prev_node)
+
+                    st.markdown("### 📋 Step-by-Step Forward Iteration Tables")
+                    for stg_num in sorted(computation_tables.keys()):
+                        st.markdown(f"**Stage {stg_num} Calculations**")
+                        st.dataframe(computation_tables[stg_num], use_container_width=True)
+
+                    total_min_cost = f_cost.get(num_net_nodes - 1, float('inf'))
+
+                # --- GRAPHVIZ STAGEWISE NETWORK DIAGRAM ---
+                dot_net = graphviz.Digraph(comment="Stagewise Network Diagram")
                 dot_net.attr(bgcolor="transparent", rankdir="LR")
-                dot_net.attr('node', shape='circle', style='filled', fillcolor='#2563eb', fontcolor='white')
-                dot_net.attr('edge', color='#38bdf8', fontname='Helvetica')
+                dot_net.attr('node', shape='circle', style='filled', fontcolor='white', fontname='Helvetica')
+                dot_net.attr('edge', fontname='Helvetica', fontsize='11')
                 
-                opt_pairs = set((shortest_path_nodes[i], shortest_path_nodes[i+1]) for i in range(len(shortest_path_nodes)-1))
+                # Group nodes into subgraphs with rank=same so they align in vertical columns per stage
+                unique_stages = sorted(list(set(node_stages.values())))
+                for stg in unique_stages:
+                    with dot_net.subgraph() as subg:
+                        subg.attr(rank='same')
+                        nodes_in_stage = [n for n, s in node_stages.items() if s == stg]
+                        for n in nodes_in_stage:
+                            # Highlight start, sink, and intermediate nodes
+                            fill_color = '#10b981' if n == net_labels[0] or n == net_labels[-1] else '#2563eb'
+                            subg.node(n, label=f"Node {n}", fillcolor=fill_color)
+
+                opt_pairs = set((shortest_path[i], shortest_path[i+1]) for i in range(len(shortest_path)-1))
 
                 for r in range(num_net_nodes):
                     for c in range(num_net_nodes):
-                        if matrix_vals[r, c] < 900:
-                            is_opt = (net_labels[r], net_labels[c]) in opt_pairs
-                            col = '#10b981' if is_opt else '#38bdf8'
-                            pen = '3.0' if is_opt else '1.0'
-                            dot_net.edge(net_labels[r], net_labels[c], label=str(int(matrix_vals[r, c])), color=col, penwidth=pen)
-                
-                st.markdown(f"### 📊 Dynamic Custom Network Diagram & Solution ({net_method})")
+                        wt_val = matrix_vals[r, c]
+                        if wt_val < 900:
+                            u_name = net_labels[r]
+                            v_name = net_labels[c]
+                            is_opt = (u_name, v_name) in opt_pairs
+                            edge_col = '#10b981' if is_opt else '#38bdf8'
+                            pen_w = '3.5' if is_opt else '1.2'
+                            dot_net.edge(u_name, v_name, label=str(int(wt_val)), color=edge_col, penwidth=pen_w)
+
+                st.markdown("### 📊 Stagewise Network Diagram (Aligned Stages)")
+                st.caption("Nodes of the same stage are aligned in vertical columns. The optimal shortest path is highlighted in bold green.")
                 st.graphviz_chart(dot_net)
                 
-                if "Forward" in net_method:
-                    st.markdown("#### 📋 Forward Iteration Computation Table (Derived from your Matrix)")
-                    df_f = pd.DataFrame(forward_stages_data, columns=["From ($x_i$)", "To ($x_j$)", "Edge Cost $d$", "Accumulated Min Distance"])
-                    st.dataframe(df_f, use_container_width=True)
-                    
-                    if dp_dist[sink] < float('inf'):
-                        path_str = " -> ".join(shortest_path_nodes)
-                        st.success(f"🌟 **Computed Shortest Route:** {path_str} | **Total Minimum Distance = {int(dp_dist[sink])}**")
-                    else:
-                        st.error("No valid path found connecting source to sink with current matrix weights.")
+                if total_min_cost < float('inf'):
+                    path_str = " -> ".join([f"Node {n}" for n in shortest_path])
+                    st.success(f"🌟 **Optimal Shortest Path ({net_method}):** {path_str} | **Total Minimum Distance = {int(total_min_cost)}**")
                 else:
-                    st.markdown("#### 📋 Backward Iteration Computation Table (Derived from your Matrix)")
-                    # Backward DP computation
-                        
-                    backward_stages_data = []
-                    back_dist = np.full(num_net_nodes, float('inf'))
-                    back_dist[sink] = 0.0
-                    for u in range(sink, -1, -1):
-                        for v in range(num_net_nodes):
-                            wt = matrix_vals[u, v]
-                            if wt < 900:
-                                backward_stages_data.append([net_labels[u], net_labels[v], wt, back_dist[v] + wt])
-                                
-                    df_b = pd.DataFrame(backward_stages_data, columns=["State ($x_i$)", "To ($x_j$)", "Edge Cost $d$", "Computation ($d + f$)"])
-                    st.dataframe(df_b, use_container_width=True)
-                    
-                    if dp_dist[sink] < float('inf'):
-                        path_str = " -> ".join(shortest_path_nodes)
-                        st.success(f"🌟 **Computed Shortest Route via Backward DP:** {path_str} | **Total Minimum Distance = {int(dp_dist[sink])}**")
-                    else:
-                        st.error("No valid path found connecting source to sink with current matrix weights.")
+                    st.error("No valid complete path found connecting source to sink with current matrix weights.")
 
     else:
         st.markdown("### 🗺️ Advanced Travelling Salesman Problem (TSP) Studio")
