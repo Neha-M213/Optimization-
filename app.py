@@ -537,7 +537,6 @@ else:
                 n = num_cities
                 other_cities = [i for i in range(n) if i != start_idx]
                 
-                # First, compute memoized DP table to determine optimal costs and decisions
                 memo_dp = {}
                 def compute_dp(i, S):
                     state = (i, frozenset(S))
@@ -562,7 +561,6 @@ else:
                 all_S = frozenset(other_cities)
                 opt_cost, _ = compute_dp(start_idx, all_S)
                 
-                # Determine optimal path states for red border/arrow highlighting
                 optimal_states_set = set()
                 curr_i = start_idx
                 curr_S = all_S
@@ -573,40 +571,33 @@ else:
                     curr_S = curr_S - {nxt}
                 optimal_states_set.add((curr_i, frozenset()))
 
-                # Unrolled Tree Generation (fully expands every branch so bottom level has full node repetitions)
                 dot_tsp = graphviz.Digraph(comment="TSP Unrolled DP State Tree")
                 dot_tsp.attr(bgcolor="transparent", rankdir="TB")
                 dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#1e293b', color='#38bdf8', penwidth='1.5')
                 dot_tsp.attr('edge', fontname='Helvetica', fontsize='10', color='#94a3b8')
                 
                 node_counter = [0]
-                total_levels = len(other_cities) + 1  # e.g., Level 4 (Root) down to Level 1 (Base cases)
 
                 def build_unrolled_tree(i, S, parent_id=None):
-                    current_level = len(S) + 1
                     state = (i, frozenset(S))
-                    
-                    # Compute value for this state
                     cost_val, best_next_city = compute_dp(i, S)
                     
                     s_id = f"n_{node_counter[0]}"
                     node_counter[0] += 1
                     
-                    # Format Label with Level number at the top
                     set_str = ", ".join(sorted([city_labels[j] for j in S])) if S else "Ø"
                     if not S:
-                        label = f"[Level {current_level}: Base Case]\ng({city_labels[i]}, Ø)\n= c_{city_labels[i]}{city_labels[start_idx]} = {int(cost_val)}"
+                        label = f"g({city_labels[i]}, Ø)\n= c_{city_labels[i]}{city_labels[start_idx]} = {int(cost_val)}"
                     else:
                         calculations = []
                         for j in S:
                             sub_cost, _ = compute_dp(j, S - {j})
-                            total = dist_mat[i][j] + sub_cost
                             calculations.append(f"{int(dist_mat[i][j])} + {int(sub_cost)}")
                         calc_joined = ", ".join(calculations)
                         if len(calculations) > 1:
-                            label = f"[Level {current_level}]\ng({city_labels[i]}, {{{set_str}}})\n= min({calc_joined})\n= {int(cost_val)}"
+                            label = f"g({city_labels[i]}, {{{set_str}}})\n= min({calc_joined})\n= {int(cost_val)}"
                         else:
-                            label = f"[Level {current_level}]\ng({city_labels[i]}, {{{set_str}}})\n= {calc_joined}\n= {int(cost_val)}"
+                            label = f"g({city_labels[i]}, {{{set_str}}})\n= {calc_joined}\n= {int(cost_val)}"
 
                     is_opt_node = (state in optimal_states_set)
                     node_fill = '#059669' if is_opt_node and state != (start_idx, all_S) else ('#2563eb' if state == (start_idx, all_S) else '#1e293b')
@@ -616,7 +607,6 @@ else:
                     dot_tsp.node(s_id, label, fillcolor=node_fill, color=node_border, penwidth=pen_w)
                     
                     if parent_id:
-                        # Check if this specific branch transition is optimal
                         parent_i, parent_S = parent_id['i'], parent_id['S']
                         _, p_best_next = memo_dp[(parent_i, parent_S)]
                         is_opt_edge = (state in optimal_states_set and parent_id['state'] in optimal_states_set and p_best_next == i)
@@ -625,16 +615,14 @@ else:
                         edge_label = f"c_{city_labels[parent_i]}{city_labels[i]}={int(dist_mat[parent_i][i])}"
                         dot_tsp.edge(parent_id['id'], s_id, label=edge_label, color=edge_color, penwidth=edge_width, fontcolor='#f8fafc' if is_opt_edge else '#94a3b8')
 
-                    # Recursively build children (unrolled)
                     for j in S:
                         child_state_info = {'i': i, 'S': S, 'state': state, 'id': s_id}
                         build_unrolled_tree(j, S - {j}, child_state_info)
 
-                # Start building unrolled tree from root
                 build_unrolled_tree(start_idx, all_S)
 
                 st.markdown(f"### 🌳 Unrolled Bellman-Held-Karp State Tree (Start/End: {start_end_city})")
-                st.caption("🔍 **How to read:** Each box is labeled with its **Level** at the top. The tree builds from base cases at Level 1 upwards to the root. Every branch is fully unrolled so that bottom base cases are explicitly shown under each path. **Red-bordered nodes and red bold arrows** highlight the optimal TSP tour.")
+                st.caption("🔍 **How to read:** The tree builds from base cases ($\emptyset$) at the bottom upwards to the root. **Red-bordered nodes and red bold arrows** highlight the optimal TSP tour.")
                 st.graphviz_chart(dot_tsp)
                 
                 tour_seq = [start_idx]
