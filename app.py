@@ -502,7 +502,7 @@ else:
             st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
 
     # ------------------------------------------
-    # 4. NETWORK & TSP SOLVER (Stagewise + Bellman-Held-Karp TSP)
+    # 4. NETWORK & TSP SOLVER (Stagewise + Unrolled Bellman-Held-Karp TSP)
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Network & Traveling Salesman Problem (TSP) Studio")
@@ -537,96 +537,111 @@ else:
                 n = num_cities
                 other_cities = [i for i in range(n) if i != start_idx]
                 
-                memo = {}
-                node_counter = [0]  # Fixed: using mutable container instead of nonlocal
-                
-                def dp_tsp(i, S):
+                # First, compute memoized DP table to determine optimal costs and decisions
+                memo_dp = {}
+                def compute_dp(i, S):
                     state = (i, frozenset(S))
-                    if state in memo:
-                        return memo[state]
-                    
-                    state_id = f"n_{node_counter[0]}"
-                    node_counter[0] += 1
-                    
+                    if state in memo_dp:
+                        return memo_dp[state]
                     if not S:
                         cost = dist_mat[i][start_idx]
-                        label = f"g({city_labels[i]}, Ø)\n= c_{city_labels[i]}{city_labels[start_idx]} = {int(cost)}"
-                        memo[state] = (cost, start_idx, state_id, label)
-                        return memo[state]
+                        memo_dp[state] = (cost, start_idx)
+                        return memo_dp[state]
                     
                     min_cost = float('inf')
                     best_next = -1
-                    calculations = []
-                    
                     for j in S:
-                        sub_S = S - {j}
-                        sub_cost, _, _, _ = dp_tsp(j, sub_S)
+                        sub_cost, _ = compute_dp(j, S - {j})
                         total = dist_mat[i][j] + sub_cost
-                        calculations.append((total, j, f"{int(dist_mat[i][j])} + {int(sub_cost)}"))
                         if total < min_cost:
                             min_cost = total
                             best_next = j
-                            
-                    calc_strs = [calc[2] for calc in calculations]
-                    calc_joined = ", ".join(calc_strs)
-                    set_str = ", ".join(sorted([city_labels[j] for j in S]))
-                    
-                    if len(calculations) > 1:
-                        label = f"g({city_labels[i]}, {{{set_str}}})\n= min({calc_joined})\n= {int(min_cost)}"
-                    else:
-                        label = f"g({city_labels[i]}, {{{set_str}}})\n= {calc_joined}\n= {int(min_cost)}"
-                        
-                    memo[state] = (min_cost, best_next, state_id, label)
-                    return memo[state]
+                    memo_dp[state] = (min_cost, best_next)
+                    return memo_dp[state]
 
                 all_S = frozenset(other_cities)
-                opt_cost, _, root_id, root_label = dp_tsp(start_idx, all_S)
+                opt_cost, _ = compute_dp(start_idx, all_S)
                 
-                dot_tsp = graphviz.Digraph(comment="TSP DP State Tree")
+                # Determine optimal path states for red border/arrow highlighting
+                optimal_states_set = set()
+                curr_i = start_idx
+                curr_S = all_S
+                while curr_S:
+                    _, nxt = memo_dp[(curr_i, curr_S)]
+                    optimal_states_set.add((curr_i, curr_S))
+                    curr_i = nxt
+                    curr_S = curr_S - {nxt}
+                optimal_states_set.add((curr_i, frozenset()))
+
+                # Unrolled Tree Generation (fully expands every branch so bottom level has full node repetitions)
+                dot_tsp = graphviz.Digraph(comment="TSP Unrolled DP State Tree")
                 dot_tsp.attr(bgcolor="transparent", rankdir="TB")
                 dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#1e293b', color='#38bdf8', penwidth='1.5')
                 dot_tsp.attr('edge', fontname='Helvetica', fontsize='10', color='#94a3b8')
                 
-                optimal_states = set()
-                curr_i = start_idx
-                curr_S = all_S
-                while curr_S:
-                    _, nxt, _, _ = memo[(curr_i, curr_S)]
-                    optimal_states.add((curr_i, curr_S))
-                    curr_i = nxt
-                    curr_S = curr_S - {nxt}
-                optimal_states.add((curr_i, frozenset()))
-                
-                for state, (cost, best_nxt, s_id, label) in memo.items():
-                    i_city, S_set = state
-                    is_opt_node = state in optimal_states
+                node_counter = [0]
+                total_levels = len(other_cities) + 1  # e.g., Level 4 (Root) down to Level 1 (Base cases)
+
+                def build_unrolled_tree(i, S, parent_id=None):
+                    current_level = len(S) + 1
+                    state = (i, frozenset(S))
                     
+                    # Compute value for this state
+                    cost_val, best_next_city = compute_dp(i, S)
+                    
+                    s_id = f"n_{node_counter[0]}"
+                    node_counter[0] += 1
+                    
+                    # Format Label with Level number at the top
+                    set_str = ", ".join(sorted([city_labels[j] for j in S])) if S else "Ø"
+                    if not S:
+                        label = f"[Level {current_level}: Base Case]\ng({city_labels[i]}, Ø)\n= c_{city_labels[i]}{city_labels[start_idx]} = {int(cost_val)}"
+                    else:
+                        calculations = []
+                        for j in S:
+                            sub_cost, _ = compute_dp(j, S - {j})
+                            total = dist_mat[i][j] + sub_cost
+                            calculations.append(f"{int(dist_mat[i][j])} + {int(sub_cost)}")
+                        calc_joined = ", ".join(calculations)
+                        if len(calculations) > 1:
+                            label = f"[Level {current_level}]\ng({city_labels[i]}, {{{set_str}}})\n= min({calc_joined})\n= {int(cost_val)}"
+                        else:
+                            label = f"[Level {current_level}]\ng({city_labels[i]}, {{{set_str}}})\n= {calc_joined}\n= {int(cost_val)}"
+
+                    is_opt_node = (state in optimal_states_set)
                     node_fill = '#059669' if is_opt_node and state != (start_idx, all_S) else ('#2563eb' if state == (start_idx, all_S) else '#1e293b')
                     node_border = '#ef4444' if is_opt_node else '#38bdf8'
                     pen_w = '3.0' if is_opt_node else '1.5'
                     
                     dot_tsp.node(s_id, label, fillcolor=node_fill, color=node_border, penwidth=pen_w)
                     
-                    if S_set:
-                        for j in S_set:
-                            sub_state = (j, S_set - {j})
-                            if sub_state in memo:
-                                _, _, sub_id, _ = memo[sub_state]
-                                is_opt_edge = (state in optimal_states and sub_state in optimal_states and best_nxt == j)
-                                edge_color = '#ef4444' if is_opt_edge else '#38bdf8'
-                                edge_width = '3.0' if is_opt_edge else '1.0'
-                                edge_label = f"c_{city_labels[i_city]}{city_labels[j]}={int(dist_mat[i_city][j])}"
-                                dot_tsp.edge(s_id, sub_id, label=edge_label, color=edge_color, penwidth=edge_width, fontcolor='#f8fafc' if is_opt_edge else '#94a3b8')
+                    if parent_id:
+                        # Check if this specific branch transition is optimal
+                        parent_i, parent_S = parent_id['i'], parent_id['S']
+                        _, p_best_next = memo_dp[(parent_i, parent_S)]
+                        is_opt_edge = (state in optimal_states_set and parent_id['state'] in optimal_states_set and p_best_next == i)
+                        edge_color = '#ef4444' if is_opt_edge else '#38bdf8'
+                        edge_width = '3.0' if is_opt_edge else '1.0'
+                        edge_label = f"c_{city_labels[parent_i]}{city_labels[i]}={int(dist_mat[parent_i][i])}"
+                        dot_tsp.edge(parent_id['id'], s_id, label=edge_label, color=edge_color, penwidth=edge_width, fontcolor='#f8fafc' if is_opt_edge else '#94a3b8')
 
-                st.markdown(f"### 🌳 Bellman-Held-Karp Dynamic Programming State Tree (Start/End: {start_end_city})")
-                st.caption("🔍 **How to read:** The tree builds from base cases ($\emptyset$) at the bottom upwards to the root. **Red-bordered nodes and red bold arrows** highlight the optimal TSP tour path.")
+                    # Recursively build children (unrolled)
+                    for j in S:
+                        child_state_info = {'i': i, 'S': S, 'state': state, 'id': s_id}
+                        build_unrolled_tree(j, S - {j}, child_state_info)
+
+                # Start building unrolled tree from root
+                build_unrolled_tree(start_idx, all_S)
+
+                st.markdown(f"### 🌳 Unrolled Bellman-Held-Karp State Tree (Start/End: {start_end_city})")
+                st.caption("🔍 **How to read:** Each box is labeled with its **Level** at the top. The tree builds from base cases at Level 1 upwards to the root. Every branch is fully unrolled so that bottom base cases are explicitly shown under each path. **Red-bordered nodes and red bold arrows** highlight the optimal TSP tour.")
                 st.graphviz_chart(dot_tsp)
                 
                 tour_seq = [start_idx]
                 c_idx = start_idx
                 c_set = all_S
                 while c_set:
-                    _, nxt, _, _ = memo[(c_idx, c_set)]
+                    _, nxt = memo_dp[(c_idx, c_set)]
                     tour_seq.append(nxt)
                     c_idx = nxt
                     c_set = c_set - {nxt}
