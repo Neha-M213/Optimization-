@@ -501,15 +501,21 @@ else:
             st.graphviz_chart(dot_bb)
             st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
 
-            # --- SUBPROBLEM GEOMETRY & STRIP DELETION GALLERY ---
+            # --- CLEAN TEXTBOOK-STYLE SUBPROBLEM GEOMETRY GALLERY ---
             st.divider()
             st.markdown("### 📐 Subproblem Geometry, Strip Deletion & LPP Construction Gallery")
-            st.caption("Each subproblem node below displays its updated constraint set, strip deletion cuts, labeled corner points, and feasible region polygon.")
+            st.caption("Each subproblem graph is scaled cleanly like a textbook diagram with bold direct line labels and clear coordinate points.")
 
-            max_rhs = max([abs(val) for val in bb_b]) if bb_b else 10.0
-            max_bound = max(max_rhs * 1.4, 10.0)
-            x_line = np.linspace(0, max_bound, 200)
-            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#ef4444', '#818cf8']
+            # Dynamically calculate clean bound based on intercepts
+            max_intercept = 6.0
+            for row in bb_A:
+                for val in row:
+                    pass
+            for b_val in bb_b:
+                max_intercept = max(max_intercept, float(b_val) * 1.2)
+            max_bound = max(max_intercept, 8.0)
+            x_line = np.linspace(0, max_bound, 300)
+            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#c084fc', '#ef4444', '#38bdf8']
 
             for idx, nd in enumerate(nodes):
                 node_id = nd["id"]
@@ -520,7 +526,6 @@ else:
                 sub_signs = nd["signs"]
                 sub_b = nd["b"]
 
-                # Fixed: Safely evaluate formatting outside f-string to prevent ValueError
                 z_str = f"{n_z:.2f}" if n_status == "Optimal" else "N/A"
                 expander_label = f"📌 Subproblem {node_id} — Status: {n_status} | Z = {z_str}"
 
@@ -531,43 +536,85 @@ else:
                         fig_sub = go.Figure()
                         valid_verts = get_2d_feasible_polygon(sub_A, sub_signs, sub_b, max_bound)
                         
+                        # Feasible region polygon
                         if len(valid_verts) >= 3:
                             poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
                             poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
-                            fig_sub.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(56, 189, 248, 0.25)", line=dict(color="#38bdf8", width=2), name=f"Feasible Region {node_id}"))
+                            fig_sub.add_trace(go.Scatter(
+                                x=poly_x, y=poly_y, fill="toself", 
+                                fillcolor="rgba(56, 189, 248, 0.20)", 
+                                line=dict(color="#38bdf8", width=2), 
+                                name=f"Feasible Region {node_id}"
+                            ))
 
+                        # Plot constraints with thick lines & direct annotations
                         for c_idx in range(len(sub_b)):
                             a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
                             s_sign = sub_signs[c_idx]
                             c_col = colors[c_idx % len(colors)]
                             
                             if c_idx >= len(bb_A):
-                                c_label = f"Branching Cut {c_idx}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
-                                line_width = 3
+                                c_label = f"Cut: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                line_width = 3.5
                                 dash_style = "dash"
                             else:
-                                c_label = f"Constraint {c_idx+1}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
-                                line_width = 2
+                                c_label = f"C{c_idx+1}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                line_width = 3
                                 dash_style = "solid"
 
                             if abs(a2) > 1e-6:
                                 y_vals = (b_val - a1 * x_line) / a2
                                 mask = (y_vals >= 0) & (y_vals <= max_bound)
                                 if np.any(mask):
-                                    fig_sub.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)))
+                                    fig_sub.add_trace(go.Scatter(
+                                        x=x_line[mask], y=y_vals[mask], mode="lines", 
+                                        name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)
+                                    ))
+                                    # Add direct text annotation near the middle of the line segment
+                                    mid_idx = int(np.sum(mask) / 2)
+                                    if mid_idx > 0:
+                                        fig_sub.add_annotation(
+                                            x=x_line[mask][mid_idx], y=y_vals[mask][mid_idx],
+                                            text=f"C{c_idx+1}" if c_idx < len(bb_A) else f"Cut{c_idx}",
+                                            showarrow=False, font=dict(color=c_col, size=12, family="Arial Black"),
+                                            yshift=10
+                                        )
                             elif abs(a1) > 1e-6:
                                 x_const = b_val / a1
                                 if 0 <= x_const <= max_bound:
-                                    fig_sub.add_trace(go.Scatter(x=[x_const, x_const], y=[0, max_bound], mode="lines", name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)))
+                                    fig_sub.add_trace(go.Scatter(
+                                        x=[x_const, x_const], y=[0, max_bound], mode="lines", 
+                                        name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)
+                                    ))
 
+                        # Plot corner points with clear text coordinates
                         if valid_verts:
                             vx, vy = zip(*valid_verts)
-                            fig_sub.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"({p[0]}, {p[1]})" for p in valid_verts], textposition="top right", marker=dict(size=10, color="#ffffff", line=dict(width=2, color="#f472b6")), name="Corner Points"))
+                            fig_sub.add_trace(go.Scatter(
+                                x=vx, y=vy, mode="markers+text", 
+                                text=[f"({p[0]}, {p[1]})" for p in valid_verts], 
+                                textposition="top right", 
+                                marker=dict(size=11, color="#f472b6", line=dict(width=2, color="white")), 
+                                name="Corner Points"
+                            ))
 
+                        # Plot optimal vertex
                         if n_status == "Optimal":
-                            fig_sub.add_trace(go.Scatter(x=[n_sol[0]], y=[n_sol[1]], mode="markers+text", text=[f"{node_id} Sol: ({n_sol[0]:.2f}, {n_sol[1]:.2f})"], textposition="bottom right", marker=dict(size=14, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Subproblem Solution"))
+                            fig_sub.add_trace(go.Scatter(
+                                x=[n_sol[0]], y=[n_sol[1]], mode="markers+text", 
+                                text=[f"Z* ({n_sol[0]:.2f}, {n_sol[1]:.2f})"], 
+                                textposition="bottom right", 
+                                marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), 
+                                name="Optimal Point"
+                            ))
 
-                        fig_sub.update_layout(xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", xaxis=dict(range=[0, max_bound]), yaxis=dict(range=[0, max_bound]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=420, margin=dict(l=20, r=20, t=30, b=20))
+                        fig_sub.update_layout(
+                            xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", 
+                            xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"), 
+                            yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"), 
+                            template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", 
+                            height=440, margin=dict(l=30, r=20, t=30, b=30)
+                        )
                         st.plotly_chart(fig_sub, use_container_width=True, key=f"plot_{node_id}")
 
                     with col_g2:
@@ -580,7 +627,7 @@ else:
                         for c_idx in range(len(sub_b)):
                             a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
                             s_sign = sub_signs[c_idx]
-                            tag = " *(Branching Cut)*" if c_idx >= len(bb_A) else ""
+                            tag = " *(Branching Cut / Strip Spliced)*" if c_idx >= len(bb_A) else ""
                             constraint_list_md += f"- ${a1}x_1 + {a2}x_2 {s_sign} {b_val}${tag}\n"
                         st.markdown(constraint_list_md)
                         st.markdown(f"- $x_1, x_2 \\ge 0$ (Non-negativity)")
