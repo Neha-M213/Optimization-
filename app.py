@@ -123,6 +123,10 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         cj_zj = cost_row - zj
         z_val = cb @ rhs
         
+        deg_rows = [i for i, r in enumerate(rhs) if np.isclose(r, 0.0, atol=1e-7)]
+        if deg_rows:
+            special_flags.add(f"⚠️ **Degeneracy:** Row(s) {[r+1 for r in deg_rows]} have basic variable RHS = 0.")
+            
         if np.max(cj_zj) <= 1e-7:
             df = pd.DataFrame(tableau, columns=var_names)
             df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
@@ -131,6 +135,17 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             df.loc[len(df)] = ["Z_j", ""] + list(np.round(zj, 3)) + [round(z_val if obj_type == "Maximize" else -z_val, 4)]
             df.loc[len(df)] = ["C_j - Z_j", ""] + list(np.round(cj_zj, 3)) + [""]
             iterations.append((it + 1, df, "Optimal Tableau Reached"))
+            
+            for idx_pos, b_idx in enumerate(basis_indices):
+                if b_idx in artificial_indices and rhs[idx_pos] > 1e-6:
+                    status = "Infeasible"
+                    special_flags.add(f"🚩 **Infeasibility:** Artificial variable {var_names[b_idx]} remains positive in basis (RHS = {rhs[idx_pos]:.4f}).")
+            
+            if status == "Optimal":
+                non_basic = [j for j in range(len(var_names)) if j not in basis_indices and j not in artificial_indices]
+                alt_vars = [var_names[j] for j in non_basic if np.isclose(cj_zj[j], 0.0, atol=1e-7)]
+                if alt_vars:
+                    special_flags.add(f"💡 **Alternative Optima:** Non-basic variable(s) {alt_vars} have C_j - Z_j = 0.")
             break
             
         entering_col = int(np.argmax(cj_zj))
@@ -138,6 +153,11 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         
         if all(col_vals <= 1e-7):
             status = "Unbounded"
+            special_flags.add(f"🚩 **Unboundedness:** Pivot column {var_names[entering_col]} has entries ≤ 0.")
+            df = pd.DataFrame(tableau, columns=var_names)
+            df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
+            df["X_B (RHS)"] = np.round(rhs, 4)
+            iterations.append((it + 1, df, f"Unbounded at {var_names[entering_col]}"))
             break
             
         valid_ratios = []
@@ -150,6 +170,13 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             break
             
         leaving_row = min(valid_ratios, key=lambda x: x[0])[1]
+        
+        df = pd.DataFrame(np.round(tableau, 4), columns=var_names)
+        df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
+        df.insert(1, "C_B", np.round(cb, 3))
+        df["X_B (RHS)"] = np.round(rhs, 4)
+        iterations.append((it + 1, df, f"Entering: **{var_names[entering_col]}** | Leaving: **{var_names[basis_indices[leaving_row]]}**"))
+        
         pivot_val = tableau[leaving_row, entering_col]
         tableau[leaving_row] /= pivot_val
         rhs[leaving_row] /= pivot_val
@@ -164,6 +191,109 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     for pos, b_idx in enumerate(basis_indices):
         if b_idx < num_vars: sol[b_idx] = rhs[pos]
     return status, sol, float(c @ sol), iterations, list(special_flags)
+
+# ==========================================
+# HELPER: DYNAMIC BRANCH & BOUND ENGINE
+# ==========================================
+def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
+    nodes, queue = [], []
+    status, sol, z_val, _, _ = solve_simplex_big_m(obj_type, c, A_init, signs_init, b_init)
+    root_node = {
+        "id": "P0",
+        "label": f"P0 (Root)\nZ = {z_val:.2f}\n" + ", ".join([f"x{j+1}={sol[j]:.2f}" for j in range(len(c))]),
+        "status": status,
+        "z": z_val if status == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
+        "sol": sol, "A": A_init, "signs": signs_init, "b": b_init,
+        "fill": "#2563eb" if status == "Optimal" else "#059669"
+    }
+    nodes.append(root_node)
+    queue.append(root_node)
+    
+    tree_edges = []
+    node_counter = 1
+    
+    while queue and len(nodes) < 12:
+        curr = queue.pop(0)
+        if curr["status"] != "Optimal": continue
+        sol = curr["sol"]
+        if all(np.isclose(val, round(val), atol=1e-4) for val in sol): continue
+            
+        frac_idx = -1
+        for j, val in enumerate(sol):
+            if not np.isclose(val, round(val), atol=1e-4):
+                frac_idx = j
+                break
+        if frac_idx == -1: continue
+            
+        val = sol[frac_idx]
+        floor_v, ceil_v = int(np.floor(val)), int(np.ceil(val))
+        
+        for new_val, sign_str in [(floor_v, "<="), (ceil_v, ">=")]:
+            r_vec = np.zeros(len(c))
+            r_vec[frac_idx] = 1.0
+            new_A = np.vstack([curr["A"], r_vec])
+            new_signs = list(curr["signs"]) + [sign_str]
+            new_b = np.append(curr["b"], new_val)
+            
+            st, sol_sub, z_sub, _, _ = solve_simplex_big_m(obj_type, c, new_A, new_signs, new_b)
+            child_id = f"P{node_counter}"
+            node_counter += 1
+            
+            c_label = f"{child_id} (x{frac_idx+1} {sign_str} {new_val})\nZ = {z_sub:.2f}\n" + ", ".join([f"x{j+1}={sol_sub[j]:.2f}" for j in range(len(c))]) if st == "Optimal" else f"{child_id} (x{frac_idx+1} {sign_str} {new_val})\n{st}"
+            fill_col = '#2563eb' if st == "Optimal" else '#059669'
+            
+            node_obj = {
+                "id": child_id, "label": c_label, "status": st,
+                "z": z_sub if st == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
+                "sol": sol_sub, "A": new_A, "signs": new_signs, "b": new_b, "fill": fill_col
+            }
+            nodes.append(node_obj)
+            tree_edges.append((curr["id"], child_id, f"x{frac_idx+1} {sign_str} {new_val}"))
+            if st == "Optimal": queue.append(node_obj)
+            
+    return nodes, tree_edges
+
+# ==========================================
+# HELPER: 2D FEASIBLE POLYGON
+# ==========================================
+def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
+    num_cons = len(b_vals)
+    candidates = [(0.0, 0.0), (0.0, max_bound), (max_bound, 0.0), (max_bound, max_bound)]
+    for i in range(num_cons):
+        a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
+        if abs(a2) > 1e-7:
+            candidates.append((0.0, b_i / a2))
+            candidates.append((max_bound, (b_i - a1 * max_bound) / a2))
+        if abs(a1) > 1e-7:
+            candidates.append((b_i / a1, 0.0))
+            candidates.append(((b_i - a2 * max_bound) / a1, max_bound))
+    for i in range(num_cons):
+        for j in range(i + 1, num_cons):
+            M_sys = np.array([[A_rows[i][0], A_rows[i][1]], [A_rows[j][0], A_rows[j][1]]], dtype=float)
+            rhs_sys = np.array([b_vals[i], b_vals[j]], dtype=float)
+            if abs(np.linalg.det(M_sys)) > 1e-7:
+                pt = np.linalg.solve(M_sys, rhs_sys)
+                candidates.append((float(pt[0]), float(pt[1])))
+
+    valid_verts = []
+    for x, y in candidates:
+        if x < -1e-4 or y < -1e-4 or x > max_bound + 1e-4 or y > max_bound + 1e-4: continue
+        ok = True
+        for i in range(num_cons):
+            val = A_rows[i][0] * x + A_rows[i][1] * y
+            if signs[i] == "<=" and val > b_vals[i] + 1e-3: ok = False
+            elif signs[i] == ">=" and val < b_vals[i] - 1e-3: ok = False
+            elif signs[i] == "=" and not np.isclose(val, b_vals[i], atol=1e-2): ok = False
+        if ok:
+            pt_clean = (round(max(0.0, x), 3), round(max(0.0, y), 3))
+            if not any(np.isclose(pt_clean[0], vx, atol=1e-2) and np.isclose(pt_clean[1], vy, atol=1e-2) for vx, vy in valid_verts):
+                valid_verts.append(pt_clean)
+
+    if len(valid_verts) >= 3:
+        cx = sum(p[0] for p in valid_verts) / len(valid_verts)
+        cy = sum(p[1] for p in valid_verts) / len(valid_verts)
+        valid_verts.sort(key=lambda p: np.arctan2(p[1] - cy, p[0] - cx))
+    return valid_verts
 
 # ==========================================
 # VIEW 1: LANDING SCREEN
@@ -198,6 +328,9 @@ else:
         
     st.divider()
 
+    # ------------------------------------------
+    # 1. SIMPLEX METHOD
+    # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
         cfg1, cfg2, cfg3 = st.columns(3)
@@ -209,7 +342,7 @@ else:
         obj_cols = st.columns(int(num_vars))
         c_vals = []
         for j in range(int(num_vars)):
-            with obj_cols[j]: c_vals.append(st.number_input(f"c{j+1}", value=3.0 if j==0 else 5.0, key=f"c_{j}"))
+            with obj_cols[j]: c_vals.append(st.number_input(f"c{j+1}", value=1.0, key=f"c_{j}"))
 
         st.markdown(f"### ⛓️ Constraints Setup:")
         A_rows, signs, b_vals = [], [], []
@@ -238,11 +371,52 @@ else:
             sol_str = ", ".join([f"**x{j+1} = {sol[j]:.4f}**" for j in range(int(num_vars))])
             st.info(f"**Optimal Objective Z = {final_z:.4f}** | {sol_str}")
 
+        st.divider()
         st.markdown("### 📋 Step-by-Step Simplex Tableaux")
         for iter_num, df, note in iterations:
             st.markdown(f"**Iteration {iter_num}** — {note}")
             st.dataframe(df, use_container_width=True)
 
+        st.divider()
+        st.markdown("### 📈 Feasible Region & Corner Points")
+        if int(num_vars) == 2:
+            max_rhs = max([abs(val) for val in b_vals]) if b_vals else 10.0
+            max_bound = max(max_rhs * 1.3, 8.0)
+            x_line = np.linspace(0, max_bound, 200)
+
+            fig = go.Figure()
+            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
+
+            valid_verts = get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound)
+            if len(valid_verts) >= 3:
+                poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
+                poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
+                fig.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(99, 102, 241, 0.30)", line=dict(color="#818cf8", width=2), name="Feasible Region"))
+
+            for i in range(int(num_cons)):
+                a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
+                col_c = colors[i % len(colors)]
+                if abs(a2) > 1e-6:
+                    y_vals = (b_i - a1 * x_line) / a2
+                    mask = (y_vals >= 0) & (y_vals <= max_bound)
+                    if np.any(mask):
+                        fig.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}", line=dict(color=col_c, width=3)))
+
+            if valid_verts:
+                vx, vy = zip(*valid_verts)
+                fig.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"CP{idx+1}: ({p[0]}, {p[1]})" for idx, p in enumerate(valid_verts)], textposition="top right", marker=dict(size=11, color="#ffffff", line=dict(width=2, color="#38bdf8")), name="Corner Points"))
+
+            if status == "Optimal":
+                fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
+
+            fig.update_layout(xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", xaxis=dict(range=[0, max_bound]), yaxis=dict(range=[0, max_bound]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("💡 2D Graphical visualization is displayed when Number of Objective Variables = 2.")
+
+    # ------------------------------------------
+    # 2. DUAL SIMPLEX METHOD
+    # ------------------------------------------
     elif problem == "Dual Simplex Method":
         st.markdown("### ⚙️ Dual Simplex Configuration")
         col_d1, col_d2 = st.columns(2)
@@ -261,6 +435,55 @@ else:
             st.warning("🚩 **Dual Simplex Rule:** Row selected as leaving variable due to most negative RHS.")
             st.success("✨ Pivot completed: Dual feasibility restored.")
 
+    # ------------------------------------------
+    # 3. BRANCH AND BOUND
+    # ------------------------------------------
+    elif problem == "Branch and Bound":
+        st.markdown("### ⚙️ Step 1: ILP Problem Configuration")
+        dim1, dim2, dim3 = st.columns(3)
+        with dim1: bb_obj = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="bb_goal")
+        with dim2: bb_vars = st.number_input("Variables count", min_value=2, max_value=2, value=2, step=1, key="bb_v")
+        with dim3: bb_cons = st.number_input("Constraints count", min_value=1, max_value=10, value=2, step=1, key="bb_c")
+
+        st.markdown("#### Objective Function Coefficients ($c_j$):")
+        bc_cols = st.columns(2)
+        bb_c_vals = []
+        for j in range(2):
+            with bc_cols[j]: bb_c_vals.append(st.number_input(f"c{j+1}", value=4.0 if j==0 else 3.0, key=f"bb_c_{j}"))
+
+        st.markdown("#### Constraints Setup:")
+        bb_A, bb_signs, bb_b = [], [], []
+        for i in range(int(bb_cons)):
+            st.markdown(f"**Constraint {i+1}:**")
+            r_cols = st.columns(4)
+            r_a = []
+            for j in range(2):
+                with r_cols[j]: r_a.append(st.number_input(f"a_{i}_{j}", value=1.0 if (i==0 and j==0) else (3.0 if (i==0 and j==1) else (3.0 if (i==1 and j==0) else 1.0)), key=f"bb_a_{i}_{j}"))
+            with r_cols[2]: bb_signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"bb_sign_{i}"))
+            with r_cols[3]: bb_b.append(st.number_input(f"b_{i}", value=12.0 if i==0 else 10.0, key=f"bb_b_{i}"))
+            bb_A.append(r_a)
+
+        if st.button("🚀 Generate Branch & Bound Search Tree"):
+            nodes, tree_edges = solve_branch_and_bound_tree(
+                bb_obj, np.array(bb_c_vals), np.array(bb_A), bb_signs, np.array(bb_b)
+            )
+            
+            dot_bb = graphviz.Digraph(comment="Branch and Bound Tree")
+            dot_bb.attr(bgcolor="transparent", rankdir="TB")
+            dot_bb.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica')
+            
+            for nd in nodes:
+                dot_bb.node(nd["id"], nd["label"], fillcolor=nd["fill"])
+            for u, v, lbl in tree_edges:
+                dot_bb.edge(u, v, label=lbl, color="#38bdf8", fontcolor="#f8fafc")
+                
+            st.markdown("### 🌳 Branch and Bound Solution Tree")
+            st.graphviz_chart(dot_bb)
+            st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
+
+    # ------------------------------------------
+    # 4. NETWORK & TSP SOLVER (Stagewise + Matrix)
+    # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Network & Traveling Salesman Problem (TSP) Studio")
         
@@ -364,11 +587,9 @@ else:
             num_net_nodes = int(st.number_input("Total Number of Nodes", min_value=3, max_value=10, value=7, step=1))
             net_labels = [str(i+1) for i in range(num_net_nodes)]
             
-            # Stage configuration helper
             st.markdown("Specify which stage each node belongs to (for proper column alignment in the diagram):")
             stage_cols = st.columns(min(num_net_nodes, 4))
             node_stages = {}
-            # Default stage heuristic (Stage 1: node 1, Last Stage: node N, middle split)
             for i, node in enumerate(net_labels):
                 col_idx = i % len(stage_cols)
                 with stage_cols[col_idx]:
@@ -379,7 +600,6 @@ else:
             st.info("Enter edge weights. Use `999` or `None` if no direct edge exists between nodes.")
             
             default_net = np.full((num_net_nodes, num_net_nodes), 999.0)
-            # Default sample graph matching user's notebook
             default_connections = [
                 (0,1,5), (0,2,14), (0,3,6),
                 (1,2,6), (1,4,12), (1,5,12),
@@ -399,19 +619,16 @@ else:
                 matrix_vals = edited_net_df.values.astype(float)
                 
                 if "Backward" in net_method:
-                    # Backward DP computation (Sink -> Source)
                     sink = num_net_nodes - 1
                     source = 0
                     
                     f_cost = {sink: 0.0}
                     policy = {sink: None}
                     
-                    # Group nodes by stages in reverse order
                     stages_sorted = sorted(list(set(node_stages.values())), reverse=True)
-                    
                     computation_tables = {}
                     
-                    for stg in stages_sorted[1:]: # from sink stage backwards
+                    for stg in stages_sorted[1:]:
                         current_stage_nodes = [n for n, s in node_stages.items() if s == stg]
                         stage_rows = []
                         for node_str in current_stage_nodes:
@@ -447,7 +664,6 @@ else:
                             stage_rows.append(row_dict)
                         computation_tables[stg] = pd.DataFrame(stage_rows)
 
-                    # Compute Stage 1 (Source)
                     source_nodes = [n for n, s in node_stages.items() if s == min(node_stages.values())]
                     source_rows = []
                     for node_str in source_nodes:
@@ -473,8 +689,7 @@ else:
                         source_rows.append(row_dict)
                     computation_tables[min(node_stages.values())] = pd.DataFrame(source_rows)
 
-                    # Reconstruct path
-                    curr_idx = 0 # start node 1
+                    curr_idx = 0
                     shortest_path = [net_labels[curr_idx]]
                     while curr_idx in policy and policy[curr_idx] is not None:
                         nxt_node = policy[curr_idx]
@@ -489,7 +704,6 @@ else:
                     total_min_cost = f_cost.get(0, float('inf'))
                     
                 else:
-                    # Forward Iteration Method (Source -> Sink)
                     source = 0
                     sink = num_net_nodes - 1
                     
@@ -531,7 +745,6 @@ else:
                             stage_rows.append(row_dict)
                         computation_tables[stg] = pd.DataFrame(stage_rows)
 
-                    # Reconstruct path backwards from sink
                     curr_idx = num_net_nodes - 1
                     shortest_path = [net_labels[curr_idx]]
                     while curr_idx in policy and policy[curr_idx] is not None:
@@ -546,20 +759,17 @@ else:
 
                     total_min_cost = f_cost.get(num_net_nodes - 1, float('inf'))
 
-                # --- GRAPHVIZ STAGEWISE NETWORK DIAGRAM ---
                 dot_net = graphviz.Digraph(comment="Stagewise Network Diagram")
                 dot_net.attr(bgcolor="transparent", rankdir="LR")
                 dot_net.attr('node', shape='circle', style='filled', fontcolor='white', fontname='Helvetica')
                 dot_net.attr('edge', fontname='Helvetica', fontsize='11')
                 
-                # Group nodes into subgraphs with rank=same so they align in vertical columns per stage
                 unique_stages = sorted(list(set(node_stages.values())))
                 for stg in unique_stages:
                     with dot_net.subgraph() as subg:
                         subg.attr(rank='same')
                         nodes_in_stage = [n for n, s in node_stages.items() if s == stg]
                         for n in nodes_in_stage:
-                            # Highlight start, sink, and intermediate nodes
                             fill_color = '#10b981' if n == net_labels[0] or n == net_labels[-1] else '#2563eb'
                             subg.node(n, label=f"Node {n}", fillcolor=fill_color)
 
