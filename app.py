@@ -639,6 +639,9 @@ else:
         st.markdown("### ✂️ Gomory Fractional Cutting Plane Studio")
         st.markdown("Solve Integer Linear Programming (ILP) problems starting directly from the relaxed optimal simplex table and applying Gomory cutting planes.")
 
+        if "gomory_loaded" not in st.session_state:
+            st.session_state.gomory_loaded = False
+
         cfg1, cfg2, cfg3 = st.columns(3)
         with cfg1: g_obj = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="g_goal")
         with cfg2: g_vars = st.number_input("Variables count (2 or 3)", min_value=2, max_value=3, value=2, step=1, key="g_v")
@@ -663,6 +666,9 @@ else:
             g_A.append(gr_a)
 
         if st.button("🚀 Load Optimal Simplex Table & Apply Gomory Cut"):
+            st.session_state.gomory_loaded = True
+
+        if st.session_state.gomory_loaded:
             st.divider()
             st.markdown("### 📊 Step 1: Relaxed LP Optimal Simplex Tableau")
             
@@ -695,156 +701,212 @@ else:
                         b_val = row_data["b"]
                         row_options.append(f"Row {r_idx}: Basic Variable {xb} = {b_val}")
 
-                    selected_row_str = st.selectbox("Choose Row for Fractional Cut", row_options)
+                    selected_row_str = st.selectbox("Choose Row for Fractional Cut", row_options, key="gomory_row_select")
                     selected_row_idx = int(selected_row_str.split(":")[0].replace("Row ", "")) - 1
                     
                     var_names_list = list(last_df.columns)[3:-1]
                     rhs_val = float(last_df.iloc[selected_row_idx + 1]["b"])
-                    basic_var_name = last_df.iloc[selected_row_idx + 1]["X_B"]
+                    basic_var_name = str(last_df.iloc[selected_row_idx + 1]["X_B"])
                     
+                    # Fixed column lookup by column name instead of positional index
                     row_coeffs = {}
-                    for v_idx, v_name in enumerate(var_names_list):
-                        row_coeffs[v_name] = float(last_df.iloc[selected_row_idx + 1][3 + v_idx])
+                    for v_name in var_names_list:
+                        row_coeffs[v_name] = float(last_df.iloc[selected_row_idx + 1][v_name])
 
                     st.markdown(f"**Selected Equation ({basic_var_name} row):**")
-                    eq_str = f"{basic_var_name}"
+                    eq_terms = []
                     for v_name, coef in row_coeffs.items():
                         if abs(coef) > 1e-6:
-                            sign_s = " + " if coef > 0 else " - "
-                            eq_str += f"{sign_s}{abs(coef):.4f}{v_name}"
-                    eq_str += f" = {rhs_val:.4f}"
-                    st.latex(eq_str)
+                            if not eq_terms:
+                                eq_terms.append(f"{coef:.4f}{v_name}" if not np.isclose(coef, 1.0) else f"{v_name}")
+                            else:
+                                sign_s = " + " if coef > 0 else " - "
+                                mag = abs(coef)
+                                eq_terms.append(f"{sign_s}{mag:.4f}{v_name}" if not np.isclose(mag, 1.0) else f"{sign_s}{v_name}")
+                    st.latex("".join(eq_terms) + f" = {rhs_val:.4f}")
 
-                    f0 = rhs_val - np.floor(rhs_val)
-                    if f0 < 0: f0 += 1.0
+                    # Compute fractional parts f_j = a_ij - floor(a_ij)
+                    def frac_part(val):
+                        f = val - np.floor(val + 1e-9)
+                        return 0.0 if np.isclose(f, 0.0, atol=1e-6) or np.isclose(f, 1.0, atol=1e-6) else f
+
+                    f0 = frac_part(rhs_val)
                     
-                    cut_terms_latex = []
-                    cut_coeffs_original = np.zeros(int(g_vars))
-                    
-                    for j in range(int(g_vars)):
-                        v_n = f"x{j+1}"
-                        if v_n in row_coeffs:
-                            val = row_coeffs[v_n]
-                            fj = val - np.floor(val)
-                            if fj < 0: fj += 1.0
-                            if fj > 1e-5:
-                                cut_coeffs_original[j] = fj
-                                cut_terms_latex.append(f"{fj:.3f}x_{j+1}")
-
-                    st.markdown("### ✂️ Step 3: Generated Gomory Cutting Plane")
-                    cut_ineq_str = " + ".join(cut_terms_latex) + f" \\ge {f0:.3f}"
-                    st.latex(f"\\text{{Gomory Cut: }} {cut_ineq_str}")
-                    st.info(f"This cutting plane eliminates the fractional vertex without removing any integer feasible solutions.")
-
-                    new_constraint_row = list(cut_coeffs_original)
-                    while len(new_constraint_row) < int(g_vars):
-                        new_constraint_row.append(0.0)
-                    
-                    new_A = np.vstack([g_A, new_constraint_row])
-                    new_signs = list(g_signs) + ["<="]
-                    new_b = np.append(g_b, -f0)
-
-                    status_cut, sol_cut, final_z_cut, iters_cut, flags_cut = solve_simplex_big_m(
-                        g_obj, np.array(g_c_vals), new_A, new_signs, new_b
-                    )
-
-                    st.markdown("### 📊 Step 4: Tableau & Solution After Gomory Cut")
-                    if iters_cut:
-                        last_c_it, last_c_df, last_c_note = iters_cut[-1]
-                        st.markdown(f"**Tableau after applying Cut (Iteration {last_c_it}):** {last_c_note}")
-                        st.dataframe(last_c_df, use_container_width=True, hide_index=True)
-
-                    if status_cut == "Optimal":
-                        st.success(f"🏆 **Integer Optimal Solution Found via Gomory Cut:** " + ", ".join([f"$x_{j+1} = {sol_cut[j]:.4f}$" for j in range(int(g_vars))]) + f" | **Z* = {final_z_cut:.4f}**")
+                    if f0 <= 1e-6:
+                        st.error(f"Selected row ({basic_var_name} = {rhs_val}) already has an integer RHS ($f_0 = 0$). Select a row with a fractional RHS.")
                     else:
-                        st.warning(f"Solution status after cut: {status_cut}")
+                        # Display tableau-space fractional cut (matching notebook notation: -sum(f_j * x_j) + s_cut = -f_0)
+                        tableau_cut_terms = []
+                        for v_name, coef in row_coeffs.items():
+                            fj = frac_part(coef)
+                            if fj > 1e-5:
+                                tableau_cut_terms.append(f"-{fj:.3f}{v_name}")
+                        
+                        st.markdown("### ✂️ Step 3: Generated Gomory Cutting Plane")
+                        st.latex(r"\text{Required Fractional Cut (Tableau Form): } " + " ".join(tableau_cut_terms) + f" + s_{{cut}} = -{f0:.3f}")
 
-                    # --- 2D & 3D VISUALIZER ---
-                    st.divider()
-                    st.markdown("### 📈 Gomory Cutting Plane Visualizer")
-                    
-                    if int(g_vars) == 2:
-                        max_rhs = max([abs(val) for val in g_b]) if g_b else 10.0
-                        max_bound = max(max_rhs * 1.4, 8.0)
-                        x_line = np.linspace(0, max_bound, 300)
+                        # Convert slack/surplus variable terms in the cut back into original decision variables (x1, x2, ...)
+                        cut_lhs_orig = np.zeros(int(g_vars))
+                        cut_rhs_orig = f0
+                        
+                        s_counter = 1
+                        slack_map = {}
+                        for i, s_sign in enumerate(g_signs):
+                            if s_sign == "<=":
+                                slack_map[f"s{s_counter}"] = (float(g_b[i]), -np.array(g_A[i], dtype=float))
+                                s_counter += 1
+                            elif s_sign == ">=":
+                                slack_map[f"s{s_counter}"] = (-float(g_b[i]), np.array(g_A[i], dtype=float))
+                                s_counter += 1
 
-                        fig_g2d = go.Figure()
-                        colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#c084fc', '#ef4444']
+                        for v_name, coef in row_coeffs.items():
+                            fj = frac_part(coef)
+                            if fj > 1e-5:
+                                if v_name.startswith("x"):
+                                    idx_x = int(v_name[1:]) - 1
+                                    cut_lhs_orig[idx_x] += fj
+                                elif v_name in slack_map:
+                                    const_term, x_vec = slack_map[v_name]
+                                    cut_rhs_orig -= fj * const_term
+                                    cut_lhs_orig += fj * x_vec
 
-                        valid_verts_orig = get_2d_feasible_polygon(g_A, g_signs, g_b, max_bound)
-                        if len(valid_verts_orig) >= 3:
-                            px = [p[0] for p in valid_verts_orig] + [valid_verts_orig[0][0]]
-                            py = [p[1] for p in valid_verts_orig] + [valid_verts_orig[0][1]]
-                            fig_g2d.add_trace(go.Scatter(x=px, y=py, fill="toself", fillcolor="rgba(56, 189, 248, 0.2)", line=dict(color="#38bdf8", width=2), name="Original Feasible Region"))
+                        orig_terms = [f"{cut_lhs_orig[j]:.3f}x_{j+1}" for j in range(int(g_vars)) if abs(cut_lhs_orig[j]) > 1e-5]
+                        st.latex(r"\text{Original Variable Space Cut: } " + " + ".join(orig_terms) + f" \\ge {cut_rhs_orig:.3f}")
+                        st.info("This cutting plane eliminates the fractional vertex without removing any integer feasible solutions.")
 
-                        for i in range(len(g_b)):
-                            a1, a2, b_i = g_A[i][0], g_A[i][1], g_b[i]
-                            if abs(a2) > 1e-6:
-                                y_vals = (b_i - a1 * x_line) / a2
-                                mask = (y_vals >= 0) & (y_vals <= max_bound)
-                                if np.any(mask):
-                                    fig_g2d.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {g_signs[i]} {b_i}", line=dict(color=colors[i%len(colors)], width=2.5)))
+                        # Append cut constraint: cut_lhs_orig @ x >= cut_rhs_orig
+                        new_A = np.vstack([g_A, cut_lhs_orig])
+                        new_signs = list(g_signs) + [">="]
+                        new_b = np.append(g_b, cut_rhs_orig)
 
-                        c0, c1 = cut_coeffs_original[0], cut_coeffs_original[1]
-                        if abs(c1) > 1e-6:
-                            y_cut = (f0 - c0 * x_line) / c1
-                            mask_cut = (y_cut >= 0) & (y_cut <= max_bound)
-                            if np.any(mask_cut):
-                                fig_g2d.add_trace(go.Scatter(x=x_line[mask_cut], y=y_cut[mask_cut], mode="lines", name=f"Gomory Cut: {c0:.2f}x₁ + {c1:.2f}x₂ ≥ {f0:.2f}", line=dict(color="#ef4444", width=3.5, dash="dash")))
-
-                        fig_g2d.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Relaxed Optimal ({sol[0]:.2f}, {sol[1]:.2f})"], textposition="top right", marker=dict(size=14, color="#fbbf24", symbol="circle", line=dict(width=2, color="white")), name="Relaxed Optimal (Fractional)"))
-
-                        if status_cut == "Optimal":
-                            fig_g2d.add_trace(go.Scatter(x=[sol_cut[0]], y=[sol_cut[1]], mode="markers+text", text=[f"Integer Optimal ({sol_cut[0]:.1f}, {sol_cut[1]:.1f})"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Integer Optimal (Gomory Cut)"))
-
-                        fig_g2d.update_layout(
-                            xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
-                            xaxis=dict(range=[0, max_bound], gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")),
-                            yaxis=dict(range=[0, max_bound], gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")),
-                            template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=520,
-                            legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                        status_cut, sol_cut, final_z_cut, iters_cut, flags_cut = solve_simplex_big_m(
+                            g_obj, np.array(g_c_vals), new_A, new_signs, new_b
                         )
-                        st.plotly_chart(fig_g2d, use_container_width=True)
 
-                    elif int(g_vars) == 3:
-                        st.markdown("#### 🧊 3D Cutting Plane & Solution Space")
-                        fig_3d = go.Figure()
-
-                        fig_3d.add_trace(go.Scatter3d(
-                            x=[sol[0]], y=[sol[1]], z=[sol[2]],
-                            mode="markers+text", text=[f"Relaxed Optimal: ({sol[0]:.2f}, {sol[1]:.2f}, {sol[2]:.2f})"],
-                            marker=dict(size=8, color="#fbbf24", symbol="circle"), name="Relaxed Optimal (Fractional)"
-                        ))
+                        st.markdown("### 📊 Step 4: Tableau & Solution After Gomory Cut")
+                        if iters_cut:
+                            last_c_it, last_c_df, last_c_note = iters_cut[-1]
+                            st.markdown(f"**Tableau after applying Cut (Iteration {last_c_it}):** {last_c_note}")
+                            st.dataframe(last_c_df, use_container_width=True, hide_index=True)
 
                         if status_cut == "Optimal":
+                            st.success(f"🏆 **Solution After Gomory Cut:** " + ", ".join([f"$x_{j+1} = {sol_cut[j]:.4f}$" for j in range(int(g_vars))]) + f" | **Z* = {final_z_cut:.4f}**")
+                        else:
+                            st.warning(f"Solution status after cut: {status_cut}")
+
+                        # --- 2D & 3D VISUALIZER ---
+                        st.divider()
+                        st.markdown("### 📈 Gomory Cutting Plane Visualizer")
+                        
+                        if int(g_vars) == 2:
+                            max_rhs = max([abs(val) for val in g_b] + [sol[0], sol[1]]) if g_b else 10.0
+                            max_bound = max(max_rhs * 1.35, 6.0)
+                            x_line = np.linspace(0, max_bound, 300)
+
+                            fig_g2d = go.Figure()
+                            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#c084fc', '#ef4444']
+
+                            valid_verts_orig = get_2d_feasible_polygon(g_A, g_signs, g_b, max_bound)
+                            if len(valid_verts_orig) >= 3:
+                                px = [p[0] for p in valid_verts_orig] + [valid_verts_orig[0][0]]
+                                py = [p[1] for p in valid_verts_orig] + [valid_verts_orig[0][1]]
+                                fig_g2d.add_trace(go.Scatter(x=px, y=py, fill="toself", fillcolor="rgba(56, 189, 248, 0.2)", line=dict(color="#38bdf8", width=2), name="Original Feasible Region"))
+
+                            valid_verts_cut = get_2d_feasible_polygon(new_A, new_signs, new_b, max_bound)
+                            if len(valid_verts_cut) >= 3:
+                                cpx = [p[0] for p in valid_verts_cut] + [valid_verts_cut[0][0]]
+                                cpy = [p[1] for p in valid_verts_cut] + [valid_verts_cut[0][1]]
+                                fig_g2d.add_trace(go.Scatter(x=cpx, y=cpy, fill="toself", fillcolor="rgba(16, 185, 129, 0.3)", line=dict(color="#10b981", width=2.5), name="Post-Cut Feasible Region"))
+
+                            for i in range(len(g_b)):
+                                a1, a2, b_i = g_A[i][0], g_A[i][1], g_b[i]
+                                if abs(a2) > 1e-6:
+                                    y_vals = (b_i - a1 * x_line) / a2
+                                    mask = (y_vals >= 0) & (y_vals <= max_bound)
+                                    if np.any(mask):
+                                        fig_g2d.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {g_signs[i]} {b_i}", line=dict(color=colors[i%len(colors)], width=2.5)))
+
+                            c0, c1 = cut_lhs_orig[0], cut_lhs_orig[1]
+                            if abs(c1) > 1e-6:
+                                y_cut = (cut_rhs_orig - c0 * x_line) / c1
+                                mask_cut = (y_cut >= 0) & (y_cut <= max_bound)
+                                if np.any(mask_cut):
+                                    fig_g2d.add_trace(go.Scatter(x=x_line[mask_cut], y=y_cut[mask_cut], mode="lines", name=f"Gomory Cut: {c0:.2f}x₁ + {c1:.2f}x₂ ≥ {cut_rhs_orig:.2f}", line=dict(color="#ef4444", width=3.5, dash="dash")))
+                            elif abs(c0) > 1e-6:
+                                x_cut_val = cut_rhs_orig / c0
+                                if 0 <= x_cut_val <= max_bound:
+                                    fig_g2d.add_trace(go.Scatter(x=[x_cut_val, x_cut_val], y=[0, max_bound], mode="lines", name=f"Gomory Cut: x₁ ≥ {x_cut_val:.2f}", line=dict(color="#ef4444", width=3.5, dash="dash")))
+
+                            fig_g2d.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Relaxed Optimal ({sol[0]:.2f}, {sol[1]:.2f})"], textposition="top right", marker=dict(size=14, color="#fbbf24", symbol="circle", line=dict(width=2, color="white")), name="Relaxed Optimal (Fractional)"))
+
+                            if status_cut == "Optimal":
+                                fig_g2d.add_trace(go.Scatter(x=[sol_cut[0]], y=[sol_cut[1]], mode="markers+text", text=[f"Post-Cut Optimal ({sol_cut[0]:.2f}, {sol_cut[1]:.2f})"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Post-Cut Optimal"))
+
+                            fig_g2d.update_layout(
+                                xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
+                                xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")),
+                                yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")),
+                                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=520,
+                                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                            )
+                            st.plotly_chart(fig_g2d, use_container_width=True)
+
+                        elif int(g_vars) == 3:
+                            st.markdown("#### 🧊 3D Cutting Plane & Solution Space")
+                            fig_3d = go.Figure()
+                            max_3d = max([abs(val) for val in g_b] + list(sol[:3]) + [5.0]) * 1.2
+
                             fig_3d.add_trace(go.Scatter3d(
-                                x=[sol_cut[0]], y=[sol_cut[1]], z=[sol_cut[2]],
-                                mode="markers+text", text=[f"Integer Optimal: ({sol_cut[0]:.1f}, {sol_cut[1]:.1f}, {sol_cut[2]:.1f})"],
-                                marker=dict(size=12, color="#10b981", symbol="diamond"), name="Integer Optimal (Gomory Cut)"
+                                x=[sol[0]], y=[sol[1]], z=[sol[2]],
+                                mode="markers+text", text=[f"Relaxed Optimal: ({sol[0]:.2f}, {sol[1]:.2f}, {sol[2]:.2f})"],
+                                marker=dict(size=8, color="#fbbf24", symbol="circle"), name="Relaxed Optimal (Fractional)"
                             ))
 
-                        c0, c1, c2 = cut_coeffs_original[0], cut_coeffs_original[1], cut_coeffs_original[2]
-                        if abs(c2) > 1e-6:
-                            x_rng = np.linspace(0, 5, 20)
-                            y_rng = np.linspace(0, 5, 20)
-                            X3d, Y3d = np.meshgrid(x_rng, y_rng)
-                            Z3d = (f0 - c0 * X3d - c1 * Y3d) / c2
-                            fig_3d.add_trace(go.Surface(
-                                x=X3d, y=Y3d, z=Z3d, colorscale="Reds", opacity=0.6, name=f"Gomory Cut Plane: {c0:.2f}x₁ + {c1:.2f}x₂ + {c2:.2f}x₃ ≥ {f0:.2f}"
-                            ))
+                            if status_cut == "Optimal":
+                                fig_3d.add_trace(go.Scatter3d(
+                                    x=[sol_cut[0]], y=[sol_cut[1]], z=[sol_cut[2]],
+                                    mode="markers+text", text=[f"Post-Cut Optimal: ({sol_cut[0]:.2f}, {sol_cut[1]:.2f}, {sol_cut[2]:.2f})"],
+                                    marker=dict(size=11, color="#10b981", symbol="diamond"), name="Post-Cut Optimal"
+                                ))
 
-                        fig_3d.update_layout(
-                            title="3D Gomory Cutting Plane & Solution Space",
-                            scene=dict(
-                                xaxis_title="x₁", yaxis_title="x₂", zaxis_title="x₃",
-                                xaxis=dict(backgroundcolor="#1e293b", gridcolor="#334155"),
-                                yaxis=dict(backgroundcolor="#1e293b", gridcolor="#334155"),
-                                zaxis=dict(backgroundcolor="#1e293b", gridcolor="#334155"),
-                            ),
-                            template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600,
-                            legend=dict(font=dict(color="#f8fafc", size=11))
-                        )
-                        st.plotly_chart(fig_3d, use_container_width=True)
+                            c0, c1, c2 = cut_lhs_orig[0], cut_lhs_orig[1], cut_lhs_orig[2]
+                            grid_rng = np.linspace(0, max_3d, 25)
+                            if abs(c2) > 1e-6:
+                                X3d, Y3d = np.meshgrid(grid_rng, grid_rng)
+                                Z3d = (cut_rhs_orig - c0 * X3d - c1 * Y3d) / c2
+                                Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d), Z3d, np.nan)
+                                fig_3d.add_trace(go.Surface(
+                                    x=X3d, y=Y3d, z=Z3d, colorscale="Reds", opacity=0.65, showscale=False,
+                                    name=f"Gomory Cut Plane"
+                                ))
+                            elif abs(c1) > 1e-6:
+                                X3d, Z3d = np.meshgrid(grid_rng, grid_rng)
+                                Y3d = (cut_rhs_orig - c0 * X3d) / c1
+                                Y3d = np.where((Y3d >= 0) & (Y3d <= max_3d), Y3d, np.nan)
+                                fig_3d.add_trace(go.Surface(
+                                    x=X3d, y=Y3d, z=Z3d, colorscale="Reds", opacity=0.65, showscale=False,
+                                    name=f"Gomory Cut Plane"
+                                ))
+                            elif abs(c0) > 1e-6:
+                                Y3d, Z3d = np.meshgrid(grid_rng, grid_rng)
+                                X3d = np.full_like(Y3d, cut_rhs_orig / c0)
+                                fig_3d.add_trace(go.Surface(
+                                    x=X3d, y=Y3d, z=Z3d, colorscale="Reds", opacity=0.65, showscale=False,
+                                    name=f"Gomory Cut Plane"
+                                ))
+
+                            fig_3d.update_layout(
+                                title="3D Gomory Cutting Plane & Solution Space",
+                                scene=dict(
+                                    xaxis_title="x₁", yaxis_title="x₂", zaxis_title="x₃",
+                                    xaxis=dict(range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155"),
+                                    yaxis=dict(range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155"),
+                                    zaxis=dict(range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155"),
+                                ),
+                                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600,
+                                legend=dict(font=dict(color="#f8fafc", size=11))
+                            )
+                            st.plotly_chart(fig_3d, use_container_width=True)
 
     # ------------------------------------------
     # 5. NETWORK & TSP SOLVER
