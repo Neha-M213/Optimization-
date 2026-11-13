@@ -72,8 +72,37 @@ def go_home():
     st.session_state.selected_problem = None
 
 # ==========================================
-# HELPER: BIG-M SIMPLEX ENGINE
+# HELPER: BIG-M SIMPLEX ENGINE (NOTEBOOK TABLEAU FORMAT)
 # ==========================================
+def build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None):
+    num_cons = len(basis_indices)
+    cb = cost_row[basis_indices]
+    
+    # Format C_j header row (matching notebook C_j row above variables)
+    cj_display = ["", "C_j ->", ""] + [round(float(val), 3) if abs(val) < 1e4 else ("-M" if val < 0 else "M") for val in cost_row] + [""]
+    
+    rows = [cj_display]
+    for i in range(num_cons):
+        cb_str = round(float(cb[i]), 3) if abs(cb[i]) < 1e4 else ("-M" if cb[i] < 0 else "M")
+        row_vals = [
+            cb_str,
+            var_names[basis_indices[i]],
+            round(float(rhs[i]), 4)
+        ] + [round(float(x), 4) for x in tableau[i]] + [
+            ratios[i] if ratios is not None else "—"
+        ]
+        rows.append(row_vals)
+        
+    z_disp = round(float(z_val if obj_type == "Maximize" else -z_val), 4)
+    zj_row = ["", "Z_j", z_disp] + [round(float(val), 3) for val in zj] + [""]
+    cj_zj_row = ["", "C_j - Z_j", ""] + [round(float(val), 3) for val in cj_zj] + [""]
+    rows.append(zj_row)
+    rows.append(cj_zj_row)
+    
+    cols = ["C_B", "X_B", "b"] + var_names + ["Ratio"]
+    df = pd.DataFrame(rows, columns=cols)
+    return df
+
 def solve_simplex_big_m(obj_type, c, A, signs, b):
     M = 1e5
     num_vars = len(c)
@@ -128,13 +157,8 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             special_flags.add(f"⚠️ **Degeneracy:** Row(s) {[r+1 for r in deg_rows]} have basic variable RHS = 0.")
             
         if np.max(cj_zj) <= 1e-7:
-            df = pd.DataFrame(tableau, columns=var_names)
-            df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
-            df.insert(1, "C_B", np.round(cb, 3))
-            df["X_B (RHS)"] = np.round(rhs, 4)
-            df.loc[len(df)] = ["Z_j", ""] + list(np.round(zj, 3)) + [round(z_val if obj_type == "Maximize" else -z_val, 4)]
-            df.loc[len(df)] = ["C_j - Z_j", ""] + list(np.round(cj_zj, 3)) + [""]
-            iterations.append((it + 1, df, "Optimal Tableau Reached"))
+            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)
+            iterations.append((it + 1, df, "Optimal Tableau Reached (All $C_j - Z_j \\le 0$)"))
             
             for idx_pos, b_idx in enumerate(basis_indices):
                 if b_idx in artificial_indices and rhs[idx_pos] > 1e-6:
@@ -154,27 +178,23 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         if all(col_vals <= 1e-7):
             status = "Unbounded"
             special_flags.add(f"🚩 **Unboundedness:** Pivot column {var_names[entering_col]} has entries ≤ 0.")
-            df = pd.DataFrame(tableau, columns=var_names)
-            df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
-            df["X_B (RHS)"] = np.round(rhs, 4)
+            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)
             iterations.append((it + 1, df, f"Unbounded at {var_names[entering_col]}"))
             break
             
         valid_ratios = []
+        ratio_display = []
         for i in range(num_cons):
             if col_vals[i] > 1e-7:
-                valid_ratios.append((rhs[i] / col_vals[i], i))
+                r_val = rhs[i] / col_vals[i]
+                valid_ratios.append((r_val, i))
+                ratio_display.append(round(float(r_val), 4))
+            else:
+                ratio_display.append("—")
                 
-        if not valid_ratios:
-            status = "Unbounded"
-            break
-            
         leaving_row = min(valid_ratios, key=lambda x: x[0])[1]
         
-        df = pd.DataFrame(np.round(tableau, 4), columns=var_names)
-        df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
-        df.insert(1, "C_B", np.round(cb, 3))
-        df["X_B (RHS)"] = np.round(rhs, 4)
+        df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=ratio_display)
         iterations.append((it + 1, df, f"Entering: **{var_names[entering_col]}** | Leaving: **{var_names[basis_indices[leaving_row]]}**"))
         
         pivot_val = tableau[leaving_row, entering_col]
@@ -375,7 +395,7 @@ else:
         st.markdown("### 📋 Step-by-Step Simplex Tableaux")
         for iter_num, df, note in iterations:
             st.markdown(f"**Iteration {iter_num}** — {note}")
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
         st.divider()
         st.markdown("### 📈 Feasible Region & Corner Points")
@@ -704,6 +724,7 @@ else:
                     total_min_cost = f_cost.get(0, float('inf'))
                     
                 else:
+                    # Strictly stagewise Forward Iteration (no same-stage transitions)
                     source = 0
                     sink = num_net_nodes - 1
                     
@@ -715,6 +736,7 @@ else:
                     
                     for stg in stages_sorted[1:]:
                         current_stage_nodes = [n for n, s in node_stages.items() if s == stg]
+                        prev_stage_indices = {net_labels.index(n) for n, s in node_stages.items() if s < stg}
                         stage_rows = []
                         for node_str in current_stage_nodes:
                             v_idx = net_labels.index(node_str)
@@ -725,7 +747,7 @@ else:
                             for prev_node_str in net_labels:
                                 u_idx = net_labels.index(prev_node_str)
                                 wt = matrix_vals[u_idx, v_idx]
-                                if wt < 900 and u_idx in f_cost:
+                                if wt < 900 and u_idx in prev_stage_indices and u_idx in f_cost:
                                     total_cost = f_cost[u_idx] + wt
                                     row_dict[f"from {prev_node_str}"] = f"{int(f_cost[u_idx])} + {int(wt)} = {int(total_cost)}"
                                     if total_cost < best_val:
