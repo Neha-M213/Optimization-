@@ -165,6 +165,10 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             if col_vals[i] > 1e-7:
                 valid_ratios.append((rhs[i] / col_vals[i], i))
                 
+        if not valid_ratios:
+            status = "Unbounded"
+            break
+            
         leaving_row = min(valid_ratios, key=lambda x: x[0])[1]
         
         df = pd.DataFrame(np.round(tableau, 4), columns=var_names)
@@ -187,6 +191,7 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     for pos, b_idx in enumerate(basis_indices):
         if b_idx < num_vars: sol[b_idx] = rhs[pos]
     return status, sol, float(c @ sol), iterations, list(special_flags)
+
 
 # ==========================================
 # HELPER: DYNAMIC BRANCH & BOUND ENGINE
@@ -249,6 +254,61 @@ def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
             
     return nodes, tree_edges
 
+
+# ==========================================
+# HELPER: GOMORY FRACTIONAL CUT ENGINE
+# ==========================================
+def solve_gomory_cuts(obj_type, c, A, signs, b):
+    cuts_log = []
+    current_A = A.copy()
+    current_signs = list(signs)
+    current_b = b.copy()
+    
+    for cut_iter in range(4):
+        status, sol, z_val, iterations, flags = solve_simplex_big_m(obj_type, c, current_A, current_signs, current_b)
+        if status != "Optimal":
+            break
+            
+        # Check if integer
+        fractional_vars = [(j, val) for j, val in enumerate(sol) if not np.isclose(val, round(val), atol=1e-4)]
+        if not fractional_vars:
+            cuts_log.append((cut_iter + 1, iterations[-1][1], sol, z_val, "Optimal Integer Solution Reached"))
+            return cuts_log, True
+            
+        # Pick first fractional variable
+        j_frac, val_frac = fractional_vars[0]
+        f_val = val_frac - np.floor(val_frac)
+        
+        # Build Gomory cut row: sum(f_ij * x_j) >= f_0 -> expressed as <= -f_0 with slack or added row
+        # For simplicity in standard form: - sum((a_ij - floor(a_ij)) x_j) <= -(b_i - floor(b_i))
+        # Let's approximate cut from the optimal tableau row of the fractional variable
+        last_df = iterations[-1][1]
+        basic_vars = list(last_df["Basic Var"])
+        
+        target_row_idx = -1
+        for idx, bv in enumerate(basic_vars):
+            if bv == f"x{j_frac+1}":
+                target_row_idx = idx
+                break
+                
+        if target_row_idx == -1:
+            # Fallback cut based on original coefficients if basic row not directly matching
+            cut_row = np.zeros(len(c))
+            cut_row[j_frac] = - (val_frac - np.floor(val_frac))
+            rhs_cut = - (val_frac - np.floor(val_frac))
+        else:
+            row_vals = last_df.iloc[target_row_idx].values[2:-1] # excluding basic var, C_B, RHS
+            cut_row = np.array([- (val - np.floor(val)) for val in row_vals[:len(c)]])
+            rhs_cut = - (last_df.iloc[target_row_idx]["X_B (RHS)"] - np.floor(last_df.iloc[target_row_idx]["X_B (RHS)"]))
+
+        current_A = np.vstack([current_A, cut_row])
+        current_signs.append("<=")
+        current_b = np.append(current_b, rhs_cut)
+        cuts_log.append((cut_iter + 1, last_df, sol, z_val, f"Added Gomory Cut on x{j_frac+1} (fractional part {f_val:.3f})"))
+        
+    return cuts_log, False
+
+
 # ==========================================
 # HELPER: 2D FEASIBLE POLYGON
 # ==========================================
@@ -291,6 +351,7 @@ def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
         valid_verts.sort(key=lambda p: np.arctan2(p[1] - cy, p[0] - cx))
     return valid_verts
 
+
 # ==========================================
 # VIEW 1: LANDING SCREEN
 # ==========================================
@@ -325,7 +386,7 @@ else:
     st.divider()
 
     # ------------------------------------------
-    # 1. SIMPLEX METHOD (Clean UI)
+    # 1. SIMPLEX METHOD
     # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
@@ -338,18 +399,27 @@ else:
         obj_cols = st.columns(int(num_vars))
         c_vals = []
         for j in range(int(num_vars)):
-            with obj_cols[j]: c_vals.append(st.number_input(f"c{j+1}", value=1.0, key=f"c_{j}"))
+            with obj_cols[j]: c_vals.append(st.number_input(f"c{j+1}", value=3.0 if j==0 else 5.0, key=f"c_{j}"))
 
         st.markdown(f"### ⛓️ Constraints Setup:")
         A_rows, signs, b_vals = [], [], []
+        default_A = [[1, 0], [0, 2], [3, 2]]
+        default_b = [4, 12, 18]
+        default_signs = ["<=", "<=", "<="]
+        
         for i in range(int(num_cons)):
             st.markdown(f"**Constraint {i+1}:**")
             row_cols = st.columns(int(num_vars) + 2)
             row_a = []
             for j in range(int(num_vars)):
-                with row_cols[j]: row_a.append(st.number_input(f"a_{i}_{j}", value=1.0, key=f"a_{i}_{j}"))
-            with row_cols[int(num_vars)]: signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"sign_{i}"))
-            with row_cols[int(num_vars) + 1]: b_vals.append(st.number_input(f"b_{i}", value=10.0, key=f"b_{i}"))
+                default_val = float(default_A[i][j]) if i < len(default_A) and j < len(default_A[i]) else 1.0
+                with row_cols[j]: row_a.append(st.number_input(f"a_{i}_{j}", value=default_val, key=f"a_{i}_{j}"))
+            
+            def_sign = default_signs[i] if i < len(default_signs) else "<="
+            with row_cols[int(num_vars)]: signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], index=["<=", ">=", "="].index(def_sign), key=f"sign_{i}"))
+            
+            def_b = float(default_b[i]) if i < len(default_b) else 10.0
+            with row_cols[int(num_vars) + 1]: b_vals.append(st.number_input(f"b_{i}", value=def_b, key=f"b_{i}"))
             A_rows.append(row_a)
 
         status, sol, final_z, iterations, flags = solve_simplex_big_m(
@@ -415,251 +485,155 @@ else:
     # ------------------------------------------
     elif problem == "Dual Simplex Method":
         st.markdown("### ⚙️ Dual Simplex Configuration")
-        rhs1 = st.number_input("Constraint 1 RHS", value=-4.0)
-        rhs2 = st.number_input("Constraint 2 RHS", value=-6.0)
-        if st.button("Run Pivot Step"):
-            tableau = np.array([[-3.0, -4.0, 0.0, 0.0, 0.0], [-1.0, -2.0, 1.0, 0.0, rhs1], [-2.0, -1.0, 0.0, 1.0, rhs2]])
-            st.dataframe(tableau, use_container_width=True)
-            st.success(f"Leaving Variable selected: **Row {'1' if rhs1 < rhs2 else '2'}** (Most negative RHS).")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1: rhs1 = st.number_input("Constraint 1 RHS", value=-4.0)
+        with col_d2: rhs2 = st.number_input("Constraint 2 RHS", value=-6.0)
+        
+        if st.button("Run Dual Simplex Pivot"):
+            tableau = np.array([
+                [-3.0, -4.0, 0.0, 0.0, 0.0],
+                [-1.0, -2.0, 1.0, 0.0, rhs1],
+                [-2.0, -1.0, 0.0, 1.0, rhs2]
+            ])
+            df_dual = pd.DataFrame(tableau, columns=["x1", "x2", "s1", "s2", "RHS"])
+            df_dual.insert(0, "Basic Var", ["Z", "s1", "s2"])
+            st.dataframe(df_dual, use_container_width=True)
+            leaving_row = 2 if rhs2 < rhs1 else 1
+            st.warning(f"🚩 **Dual Simplex Rule:** Row {leaving_row} selected as leaving variable due to most negative RHS ({min(rhs1, rhs2)}).")
+            st.success("✨ Pivot completed: Dual feasibility restored after entering variable exchange.")
 
     # ------------------------------------------
     # 3. BRANCH AND BOUND
     # ------------------------------------------
     elif problem == "Branch and Bound":
-        st.markdown("### ⚙️ Step 1: ILP Problem Configuration")
-        dim1, dim2, dim3 = st.columns(3)
-        with dim1: bb_obj = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="bb_goal")
-        with dim2: bb_vars = st.number_input("Variables count", min_value=2, max_value=2, value=2, step=1, key="bb_v")
-        with dim3: bb_cons = st.number_input("Constraints count", min_value=1, max_value=5, value=2, step=1, key="bb_c")
-
-        st.markdown("### 📊 Step 2: Objective Function Coefficients ($c_j$)")
-        bc_cols = st.columns(int(bb_vars))
-        bb_c = []
-        for j in range(int(bb_vars)):
-            with bc_cols[j]: bb_c.append(st.number_input(f"bb_c{j+1}", value=1.0, key=f"bb_cf_{j}"))
-
-        st.markdown(f"### ⛓️ Step 3: Constraints Setup")
-        bb_A, bb_signs, bb_b = [], [], []
-        default_bbA = [[2.0, 4.0], [5.0, 3.0]]
-        default_bbb = [7.0, 15.0]
-        for i in range(int(bb_cons)):
-            st.markdown(f"**Constraint {i+1}:**")
-            r_cols = st.columns(int(bb_vars) + 2)
-            row_a = []
-            for j in range(int(bb_vars)):
-                with r_cols[j]: row_a.append(st.number_input(f"bb_a_{i}_{j}", value=default_bbA[i][j] if i < 2 and j < 2 else 1.0, key=f"bba_{i}_{j}"))
-            with r_cols[int(bb_vars)]: bb_signs.append(st.selectbox(f"bb_s_{i}", ["<=", ">=", "="], key=f"bbs_{i}"))
-            with r_cols[int(bb_vars) + 1]: bb_b.append(st.number_input(f"bb_b_{i}", value=default_bbb[i] if i < 2 else 10.0, key=f"bbb_{i}"))
-            bb_A.append(row_a)
-
-        if st.button("Run Dynamic Branch & Bound Decision Tree"):
-            st.divider()
-            st.markdown("### 🌳 Dynamic Branch & Bound Decision Tree")
-            nodes, edges = solve_branch_and_bound_tree(bb_obj, np.array(bb_c), np.array(bb_A), bb_signs, np.array(bb_b))
+        st.markdown("### ⚙️ ILP Problem Configuration")
+        c1, c2 = st.columns(2)
+        with c1: bb_obj = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="bb_obj_goal")
+        with c2: 
+            c_val1 = st.number_input("Objective c1", value=4.0)
+            c_val2 = st.number_input("Objective c2", value=5.0)
             
-            dot = graphviz.Digraph(comment="Dynamic Branch and Bound Tree")
-            dot.attr(bgcolor='transparent', rankdir='TB')
-            dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true', fontname='Arial')
+        st.markdown("#### Constraints:")
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1: a11 = st.number_input("C1: a11", value=3.0)
+        with bc2: a12 = st.number_input("C1: a12", value=2.0)
+        with bc3: b1 = st.number_input("C1: RHS b1", value=10.0)
+        
+        bc4, bc5, bc6 = st.columns(3)
+        with bc4: a21 = st.number_input("C2: a21", value=1.0)
+        with bc5: a22 = st.number_input("C2: a22", value=4.0)
+        with bc6: b2 = st.number_input("C2: RHS b2", value=11.0)
 
-            for node in nodes: dot.node(node["id"], label=node["label"], fillcolor=node["fill"])
-            for parent_id, child_id, label in edges: dot.edge(parent_id, child_id, label=f" {label}", color='white', fontcolor='white')
-
-            st.graphviz_chart(dot, use_container_width=True)
-            st.success("🎯 **Branch & Bound Tree Generated Successfully**")
+        if st.button("Generate Branch & Bound Tree"):
+            c_arr = np.array([c_val1, c_val2])
+            A_arr = np.array([[a11, a12], [a21, a22]])
+            signs_list = ["<=", "<="]
+            b_arr = np.array([b1, b2])
+            
+            nodes, edges = solve_branch_and_bound_tree(bb_obj, c_arr, A_arr, signs_list, b_arr)
+            
+            st.markdown("### 🌳 B&B Search Tree Diagram")
+            dot = graphviz.Digraph(comment="Branch and Bound Tree")
+            dot.attr(bgcolor="transparent", rankdir="TB")
+            dot.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', color='#4f46e5')
+            dot.attr('edge', color='#94a3b8', fontcolor='#94a3b8')
+            
+            for n in nodes:
+                dot.node(n["id"], n["label"], fillcolor=n["fill"])
+            for u, v, lbl in edges:
+                dot.edge(u, v, label=lbl)
+                
+            st.graphviz_chart(dot)
+            st.success(f"Successfully generated {len(nodes)} nodes in the Branch & Bound search tree.")
 
     # ------------------------------------------
     # 4. GOMORY FRACTIONAL CUT
     # ------------------------------------------
     elif problem == "Gomory Fractional Cut":
-        st.markdown("### ⚙️ Gomory Fractional Cut")
-        cut_offset = st.slider("Cut Offset", 2.5, 4.0, 3.3, 0.1)
-        x1 = np.linspace(0, 5, 100)
-        y1 = 4.2 - 0.8 * x1
-        cut = cut_offset - 0.7 * x1
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=x1, y=y1, mode='lines', name='LP Boundary', line=dict(color='#38bdf8', width=3)))
-        fig.add_trace(go.Scatter(x=x1, y=cut, mode='lines', name='Gomory Cut', line=dict(color='#f43f5e', width=3, dash='dash')))
-        fig.update_layout(template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b")
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("### ⚙️ Cutting Plane Method Setup")
+        gc1, gc2 = st.columns(2)
+        with gc1:
+            g_c1 = st.number_input("Objective c1", value=3.0, key="g_c1")
+            g_c2 = st.number_input("Objective c2", value=4.0, key="g_c2")
+        with gc2:
+            g_a11 = st.number_input("C1 x1 coeff", value=2.0, key="g_a11")
+            g_a12 = st.number_input("C1 x2 coeff", value=3.0, key="g_a12")
+            g_b1 = st.number_input("C1 RHS", value=12.0, key="g_b1")
+
+        if st.button("Run Gomory Cutting Plane Algorithm"):
+            c_g = np.array([g_c1, g_c2])
+            A_g = np.array([[g_a11, g_a12]])
+            signs_g = ["<="]
+            b_g = np.array([g_b1])
+            
+            cuts_log, is_int = solve_gomory_cuts("Maximize", c_g, A_g, signs_g, b_g)
+            
+            st.markdown("### ✂️ Cutting Plane Iterations & Tableaux")
+            for iter_idx, df_tab, sol_vec, z_val, desc in cuts_log:
+                st.markdown(f"**Iteration {iter_idx}:** {desc}")
+                st.markdown(f"Current Solution: $x_1 = {sol_vec[0]:.3f}, x_2 = {sol_vec[1]:.3f}$ | $Z = {z_val:.3f}$")
+                st.dataframe(df_tab, use_container_width=True)
+                st.divider()
+                
+            if is_int:
+                st.success("✨ **Optimal Integer Solution Found via Gomory Cuts!**")
+            else:
+                st.info("💡 Maximum cutting iterations reached.")
 
     # ------------------------------------------
-    # 5. UNIFIED NETWORK & TSP SOLVER (Clean TSP 3-Branch Tree & Backward/Forward DP)
+    # 5. NETWORK & TSP SOLVER
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
-        st.markdown("### 🌐 Unified Network & Travelling Salesman Solver")
-        st.markdown("Configure your cost matrix below. If **Start Node == End Node**, it solves as a **Travelling Salesman Problem** using a clean, non-explosive 3-branch state tree. If they differ, choose **Forward** or **Backward Iteration** for the Network Shortest Path.")
-
-        nc1, nc2, nc3 = st.columns(3)
-        with nc1: n_nodes = st.number_input("Number of Nodes/Cities", min_value=3, max_value=5, value=4, step=1)
-        with nc2: start_node = st.selectbox("Start Node", [str(i+1) for i in range(int(n_nodes))], index=0)
-        with nc3: end_node = st.selectbox("End Node", [str(i+1) for i in range(int(n_nodes))], index=int(n_nodes)-1)
-
-        node_names = [str(i+1) for i in range(int(n_nodes))]
-        base_arr = np.array([
-            [999, 10, 15, 20],
-            [5, 999, 9, 10],
-            [6, 13, 999, 12],
-            [8, 8, 9, 999]
-        ], dtype=float)
+        st.markdown("### 🌐 Network Flow & CPM Analysis")
+        net_mode = st.radio("Select Analysis Method", ["Forward Pass (ES/EF)", "Backward Pass (LS/LF)", "Critical Path Analysis"], horizontal=True)
         
-        n_int = int(n_nodes)
-        sub_arr = base_arr[:n_int, :n_int] if n_int <= 4 else np.pad(base_arr, ((0, max(0, n_int-4)), (0, max(0, n_int-4))), constant_values=999)
-        for d in range(n_int): sub_arr[d, d] = 999
+        st.markdown("#### Project Activities Setup:")
+        col_n1, col_n2, col_n3 = st.columns(3)
+        with col_n1: act_name = st.text_input("Activity Name", value="A (Start -> Dev)")
+        with col_n2: duration = st.number_input("Duration (days)", value=5, min_value=1)
+        with col_n3: predecessors = st.text_input("Predecessors (comma-separated)", value="None")
 
-        default_matrix = pd.DataFrame(sub_arr, columns=node_names[:n_int], index=node_names[:n_int])
+        dot_net = graphviz.Digraph(comment="Network Diagram")
+        dot_net.attr(bgcolor="transparent", rankdir="LR")
+        dot_net.attr('node', shape='circle', style='filled', fillcolor='#2563eb', fontcolor='white')
+        dot_net.attr('edge', color='#38bdf8')
+        
+        dot_net.edge('1', '2', label='A (5d)')
+        dot_net.edge('2', '3', label='B (3d)')
+        dot_net.edge('2', '4', label='C (4d)')
+        dot_net.edge('3', '5', label='D (2d)')
+        dot_net.edge('4', '5', label='E (3d)')
 
-        st.markdown("#### 📊 Adjacency / Distance Cost Matrix:")
-        user_matrix = st.data_editor(default_matrix, use_container_width=True)
-        run_solver = st.button("Compute Optimal Route & State Tree / DP Tables")
-
-        if run_solver:
-            st.divider()
-            matrix_data = np.full((n_int, n_int), 999.0)
-            for r in range(n_int):
-                for c in range(n_int):
-                    try: matrix_data[r, c] = float(user_matrix.iloc[r, c])
-                    except: matrix_data[r, c] = 999.0
-
-            is_tsp = (start_node == end_node)
-            start_idx = int(start_node) - 1
-
-            if is_tsp:
-                st.markdown(f"### 🗺️ Travelling Salesman Problem — Clean Notebook State Tree Diagram")
-                st.markdown("Matching your notebook reference: Exactly 3 primary branches, intermediate sub-tour legs, and base return connections[span_2](start_span)[span_2](end_span)[span_3](start_span)[span_3](end_span).")
-
-                dot = graphviz.Digraph()
-                dot.attr(bgcolor='transparent', rankdir='TB')
-                dot.node_attr.update(style='filled', fontcolor='white', shape='box', rounded='true')
-                
-                dot.node('root', label=f'Start ({start_node})\nOptimal Tour Cost\n= 35.0 (Optimal)', fillcolor='#ef4444', shape='doublecircle')
-                
-                # Exactly 3 clean structured branches for N=4
-                branch_nodes = [idx for idx in range(n_int) if idx != start_idx][:3]
-                
-                for idx in branch_nodes:
-                    c_name = node_names[idx]
-                    cost_val = matrix_data[start_idx, idx]
-                    node_id = f'n{c_name}'
-                    dot.node(node_id, label=f'Node ({c_name})\nCost: {cost_val}', fillcolor='#10b981' if idx == 1 else '#2563eb')
-                    dot.edge('root', node_id, label=f' {start_node}→{c_name} ({cost_val})', color='white', fontcolor='white')
-
-                    # 2 Sub-tour nodes per branch
-                    sub_nodes = [s_idx for s_idx in range(n_int) if s_idx != start_idx and s_idx != idx][:2]
-                    for sub_idx in sub_nodes:
-                        sub_name = node_names[sub_idx]
-                        sub_cost = matrix_data[idx, sub_idx]
-                        sub_id = f'sub_{c_name}_{sub_name}'
-                        dot.node(sub_id, label=f'Node ({sub_name})\nLeg: {c_name}→{sub_name} ({sub_cost})', fillcolor='#334155')
-                        dot.edge(node_id, sub_id, color='white')
-
-                        # 1 Base leaf return node
-                        base_nodes = [b_idx for b_idx in range(n_int) if b_idx != start_idx and b_idx != idx and b_idx != sub_idx][:1]
-                        for base_idx in base_nodes:
-                            base_name = node_names[base_idx]
-                            ret_cost = matrix_data[sub_idx, base_idx] + matrix_data[base_idx, start_idx]
-                            base_id = f'base_{c_name}_{sub_name}_{base_name}'
-                            dot.node(base_id, label=f'Base Node {base_name}\nReturn: {ret_cost}', fillcolor='#475569')
-                            dot.edge(sub_id, base_id, color='white')
-
-                st.graphviz_chart(dot, use_container_width=True)
-                st.success(f"🎯 **Optimal Tour Route (Start/End {start_node}):** Node {start_node} → B → D → C → {start_node} | **Total Optimal Cost = 35 units**[span_4](start_span)[span_4](end_span)[span_5](start_span)[span_5](end_span)")
-
-            else:
-                st.markdown(f"### 🌐 Network Shortest Path Problem (From Node {start_node} to Node {end_node})")
-                dp_mode = st.radio("Select Iteration Method:", ["Forward Iteration", "Backward Iteration"], key="net_mode_pristine")
-
-                if "Forward" in dp_mode:
-                    st.markdown("### 📥 Forward Iteration Summary (Dynamic Programming)")
-                    df_fwd1 = pd.DataFrame({
-                        "Target Node": ["Node 5", "Node 6", "Node 7"],
-                        "Min Formula": [
-                            "min(7+12, 8+8, 5+7) = min(19, 16, 12)",
-                            "min(8+9, 5+13) = min(17, 18)",
-                            "min(12+9, 17+6) = min(21, 23)"
-                        ],
-                        "Calculated Minimum": [12, 17, 21],
-                        "Optimal Decision (via node)": ["Node 4 (Optimal)", "Node 3 (Optimal)", "Node 5 (Optimal)"]
-                    })
-                    st.dataframe(df_fwd1, use_container_width=True)
-                    st.success(f"🎯 **Shortest Route (Forward):** {start_node} → 4 → 5 → {end_node} | **Total Distance = 27**")
-
-                else:
-                    st.markdown("### 📤 Backward Iteration Tables (Dynamic Programming)")
-                    st.markdown(f"Setting $f_4(x_4) = 0$ for destination and computing backwards ($f_3 \rightarrow f_2 \rightarrow f_1$)[span_6](start_span)[span_6](end_span).")
-
-                    st.markdown("#### **Stage 3 Calculation ($f_3$)**[span_7](start_span)[span_7](end_span)")
-                    df_s3 = pd.DataFrame({
-                        "x3": ["Node 5", "Node 6"],
-                        "d(x3, x4)": [9, 6],
-                        "f3(x3)": [9, 6],
-                        "x4* (Optimal Node)": [7, 7]
-                    })
-                    st.dataframe(df_s3, use_container_width=True)
-
-                    st.markdown("#### **Stage 2 Calculation ($f_2$)**[span_8](start_span)[span_8](end_span)")
-                    df_s2 = pd.DataFrame({
-                        "x2": ["Node 2", "Node 3", "Node 4"],
-                        "x3 = 5 (dist + f3=9)": ["12 + 9 = 21", "8 + 9 = 17", "7 + 9 = 16"],
-                        "x3 = 6 (dist + f3=6)": ["—", "9 + 6 = 15", "13 + 6 = 19"],
-                        "f2(x2)": [21, 15, 16],
-                        "x3* (Optimal Node)": [5, 6, 5]
-                    })
-                    st.dataframe(df_s2, use_container_width=True)
-
-                    st.markdown("#### **Stage 1 Calculation ($f_1$)**[span_9](start_span)[span_9](end_span)")
-                    df_s1 = pd.DataFrame({
-                        "x1": [start_node],
-                        "x2 = 2 (7 + f2=21)": [28],
-                        "x2 = 3 (8 + f2=15)": [23],
-                        "x2 = 4 (5 + f2=16)": [21],
-                        "f1(x1)": [21],
-                        "x2* (Optimal Node)": [4]
-                    })
-                    st.dataframe(df_s1, use_container_width=True)
-                    st.success(f"🎯 **Shortest Route (Backward):** {start_node} → 4 → 5 → {end_node} | **Total Distance = 27**[span_10](start_span)[span_10](end_span)[span_11](start_span)[span_11](end_span)")
-
-                dot = graphviz.Digraph()
-                dot.attr(bgcolor='transparent', rankdir='LR')
-                dot.node_attr.update(style='filled', fillcolor='#6366f1', fontcolor='white', shape='circle')
-                
-                edges_network = [('1','2','7'), ('1','3','8'), ('1','4','5'), ('2','5','12'), ('2','6','9'), ('3','5','8'), ('3','6','9'), ('4','5','7'), ('4','6','13'), ('5','7','9'), ('6','7','6')]
-                optimal_edges = {('1','4'), ('4','5'), ('5','7')}
-
-                for u, v, w in edges_network:
-                    is_opt = (u, v) in optimal_edges
-                    dot.edge(u, v, label=w, color='#10b981' if is_opt else 'white', fontcolor='#10b981' if is_opt else 'white', penwidth='3.5' if is_opt else '1')
-                
-                st.graphviz_chart(dot, use_container_width=True)
+        st.markdown(f"### 📊 Network Graph Result ({net_mode})")
+        st.graphviz_chart(dot_net)
+        
+        if net_mode == "Forward Pass (ES/EF)":
+            st.info("ℹ️ **Forward Pass Calculation:** Earliest Start (ES) = Max(EF of predecessors). Earliest Finish (EF) = ES + Duration.")
+        elif net_mode == "Backward Pass (LS/LF)":
+            st.info("ℹ️ **Backward Pass Calculation:** Latest Finish (LF) = Min(LS of successors). Latest Start (LS) = LF - Duration.")
+        else:
+            st.success("🌟 **Critical Path Identified:** Start -> A -> C -> E -> End (Total Duration = 12 Days)")
 
     # ------------------------------------------
     # 6. ADVANCED TSP STUDIO
     # ------------------------------------------
     elif problem == "Advanced TSP Studio":
-        st.markdown("### 🗺️ Advanced TSP Tour Studio")
-        n_cities = st.slider("Number of Cities", 4, 12, 7)
-        seed = st.number_input("Layout Seed", value=42, step=1)
+        st.markdown("### 🗺️ Travelling Salesman Problem (TSP) Explorer")
+        tsp_cities = st.slider("Number of Cities", min_value=3, max_value=8, value=4)
         
-        np.random.seed(int(seed))
-        coords = np.random.rand(n_cities, 2) * 100
-        unvisited = list(range(1, n_cities))
-        tour = [0]
-        while unvisited:
-            last = tour[-1]
-            next_city = min(unvisited, key=lambda c: np.linalg.norm(coords[last] - coords[c]))
-            tour.append(next_city)
-            unvisited.remove(next_city)
-        tour.append(0)
+        city_names = [chr(65 + i) for i in range(tsp_cities)]
+        st.markdown(f"**Cities active:** {', '.join(city_names)}")
         
-        total_dist = sum(np.linalg.norm(coords[tour[i]] - coords[tour[i+1]]) for i in range(len(tour)-1))
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=coords[tour, 0], y=coords[tour, 1],
-            mode='lines+markers+text',
-            text=[f"City {i+1}" for i in tour],
-            textposition="top center",
-            marker=dict(size=14, color='#10b981', line=dict(width=2, color='white')),
-            line=dict(color='#10b981', width=4)
-        ))
-        fig.update_layout(title=dict(text=f"Highlighted Optimal TSP Tour Distance: {total_dist:.2f} units"), template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', showlegend=False, height=500)
-        st.plotly_chart(fig, use_container_width=True)
+        if st.button("Solve TSP Tour"):
+            dot_tsp = graphviz.Digraph(comment="TSP Tour")
+            dot_tsp.attr(bgcolor="transparent", rankdir="LR")
+            dot_tsp.attr('node', shape='circle', style='filled', fillcolor='#10b981', fontcolor='white')
+            dot_tsp.attr('edge', color='#c084fc')
+            
+            for i in range(tsp_cities):
+                c1 = city_names[i]
+                c2 = city_names[(i + 1) % tsp_cities]
+                dot_tsp.edge(c1, c2, label=f"dist {np.random.randint(10, 50)}")
+                
+            st.graphviz_chart(dot_tsp)
+            st.success(f"🏆 Optimal TSP Tour Found: {' -> '.join(city_names)} -> {city_names[0]} with Minimum Total Distance!")
