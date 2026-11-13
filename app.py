@@ -357,11 +357,11 @@ else:
                     st.error("No valid complete tour found with the given distance matrix weights.")
 
         else:
-            st.markdown("#### 🔄 Network Shortest Route Matrix & Stage Configuration")
+            st.markdown("#### 🔄 Fully Flexible Network Shortest Route Matrix")
             net_method = st.selectbox("Select Iteration Method", ["Forward Iteration Method (Source -> Sink)", "Backward Iteration Method (Sink -> Source)"])
             
             st.markdown("##### Input Custom Network Adjacency / Stage Matrix:")
-            num_net_nodes = st.number_input("Number of Network Nodes", min_value=3, max_value=8, value=7, step=1)
+            num_net_nodes = int(st.number_input("Number of Network Nodes", min_value=3, max_value=8, value=7, step=1))
             net_labels = [str(i+1) for i in range(num_net_nodes)]
             
             default_net = np.full((num_net_nodes, num_net_nodes), 999.0)
@@ -373,61 +373,86 @@ else:
             net_df = pd.DataFrame(default_net, columns=net_labels, index=net_labels)
             edited_net_df = st.data_editor(net_df, use_container_width=True)
             
-            if st.button("Compute Network Shortest Route & Tables"):
-                dot_net = graphviz.Digraph(comment="Custom Network Flow Graph")
+            if st.button("Compute Network Shortest Route & Tables from Matrix"):
+                matrix_vals = edited_net_df.values.astype(float)
+                
+                # Dynamic Shortest Path Calculation via DP based on user matrix
+                # Assuming node 0 is source and num_net_nodes-1 is sink
+                source, sink = 0, num_net_nodes - 1
+                
+                # Forward DP computation from edited matrix
+                dp_dist = np.full(num_net_nodes, float('inf'))
+                dp_parent = np.full(num_net_nodes, -1)
+                dp_dist[source] = 0.0
+                
+                forward_stages_data = []
+                for u in range(num_net_nodes):
+                    if dp_dist[u] == float('inf') and u != source: continue
+                    for v in range(num_net_nodes):
+                        wt = matrix_vals[u, v]
+                        if wt < 900: # valid edge
+                            if dp_dist[u] + wt < dp_dist[v]:
+                                dp_dist[v] = dp_dist[u] + wt
+                                dp_parent[v] = u
+                            forward_stages_data.append([net_labels[u], net_labels[v], wt, dp_dist[v]])
+
+                # Reconstruct shortest path
+                curr = sink
+                shortest_path_nodes = []
+                while curr != -1:
+                    shortest_path_nodes.append(net_labels[curr])
+                    curr = int(dp_parent[curr])
+                shortest_path_nodes.reverse()
+
+                dot_net = graphviz.Digraph(comment="Dynamic Custom Network Flow Graph")
                 dot_net.attr(bgcolor="transparent", rankdir="LR")
                 dot_net.attr('node', shape='circle', style='filled', fillcolor='#2563eb', fontcolor='white')
                 dot_net.attr('edge', color='#38bdf8', fontname='Helvetica')
                 
-                matrix_vals = edited_net_df.values.astype(float)
-                
+                opt_pairs = set((shortest_path_nodes[i], shortest_path_nodes[i+1]) for i in range(len(shortest_path_nodes)-1))
+
                 for r in range(num_net_nodes):
                     for c in range(num_net_nodes):
                         if matrix_vals[r, c] < 900:
-                            is_opt = (r == 0 and c == 3) or (r == 3 and c == 4) or (r == 4 and c == 6)
+                            is_opt = (net_labels[r], net_labels[c]) in opt_pairs
                             col = '#10b981' if is_opt else '#38bdf8'
                             pen = '3.0' if is_opt else '1.0'
                             dot_net.edge(net_labels[r], net_labels[c], label=str(int(matrix_vals[r, c])), color=col, penwidth=pen)
                 
-                st.markdown(f"### 📊 Custom Network Diagram & Solution ({net_method})")
+                st.markdown(f"### 📊 Dynamic Custom Network Diagram & Solution ({net_method})")
                 st.graphviz_chart(dot_net)
                 
                 if "Forward" in net_method:
-                    st.markdown("#### 📋 Forward Iteration Computation Tables")
+                    st.markdown("#### 📋 Forward Iteration Computation Table (Derived from your Matrix)")
+                    df_f = pd.DataFrame(forward_stages_data, columns=["From ($x_i$)", "To ($x_j$)", "Edge Cost $d$", "Accumulated Min Distance"])
+                    st.dataframe(df_f, use_container_width=True)
                     
-                    df_f1 = pd.DataFrame([
-                        ["1", "2", matrix_vals[0,1] if matrix_vals[0,1]<900 else "-", f"{matrix_vals[0,1]} (via 1)" if matrix_vals[0,1]<900 else "-"],
-                        ["1", "3", matrix_vals[0,2] if matrix_vals[0,2]<900 else "-", f"{matrix_vals[0,2]} (via 1)" if matrix_vals[0,2]<900 else "-"],
-                        ["1", "4", matrix_vals[0,3] if matrix_vals[0,3]<900 else "-", f"{matrix_vals[0,3]} (via 1)" if matrix_vals[0,3]<900 else "-"]
-                    ], columns=["From", "To", "Distance", "Shortest Distance"])
-                    st.dataframe(df_f1, use_container_width=True)
-                    
-                    df_f2 = pd.DataFrame([
-                        ["5", "2, 3, 4", "Calculated from matrix weights", "12 (via Node 4)"],
-                        ["6", "3, 4", "Calculated from matrix weights", "17 (via Node 3)"]
-                    ], columns=["State", "Incoming From", "Computation", "Optimal Solution"])
-                    st.dataframe(df_f2, use_container_width=True)
-                    
-                    st.success("🌟 **Shortest Route Computed:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27**")
+                    if dp_dist[sink] < float('inf'):
+                        path_str = " -> ".join(shortest_path_nodes)
+                        st.success(f"🌟 **Computed Shortest Route:** {path_str} | **Total Minimum Distance = {int(dp_dist[sink])}**")
+                    else:
+                        st.error("No valid path found connecting source to sink with current matrix weights.")
                 else:
-                    st.markdown("#### 📋 Backward Iteration Computation Tables")
+                    st.markdown("#### 📋 Backward Iteration Computation Table (Derived from your Matrix)")
+                    # Backward DP computation
+                        
+                    backward_stages_data = []
+                    back_dist = np.full(num_net_nodes, float('inf'))
+                    back_dist[sink] = 0.0
+                    for u in range(sink, -1, -1):
+                        for v in range(num_net_nodes):
+                            wt = matrix_vals[u, v]
+                            if wt < 900:
+                                backward_stages_data.append([net_labels[u], net_labels[v], wt, back_dist[v] + wt])
+                                
+                    df_b = pd.DataFrame(backward_stages_data, columns=["State ($x_i$)", "To ($x_j$)", "Edge Cost $d$", "Computation ($d + f$)"])
+                    st.dataframe(df_b, use_container_width=True)
                     
-                    df_b3 = pd.DataFrame([
-                        ["5", "7", "9 + 0 = 9", "9 (via 7)"],
-                        ["6", "7", "6 + 0 = 6", "6 (via 7)"]
-                    ], columns=["State", "To", "Computation", "Optimal Solution"])
-                    st.markdown("**Stage 3 Table:**")
-                    st.dataframe(df_b3, use_container_width=True)
-                    
-                    df_b2 = pd.DataFrame([
-                        ["2", "5", "12 + 9 = 21", "21 (via 5)"],
-                        ["3", "5, 6", "min(8+9, 9+6) = 15", "15 (via 6)"],
-                        ["4", "5, 6", "min(7+9, 13+6) = 16", "16 (via 5)"]
-                    ], columns=["State", "To", "Computation", "Optimal Solution"])
-                    st.markdown("**Stage 2 Table:**")
-                    st.dataframe(df_b2, use_container_width=True)
-                    
-                    st.success("🌟 **Shortest Route via Backward DP:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27**")
+                    if dp_dist[sink] < float('inf'):
+                        path_str = " -> ".join(shortest_path_nodes)
+                        st.success(f"🌟 **Computed Shortest Route via Backward DP:** {path_str} | **Total Minimum Distance = {int(dp_dist[sink])}**")
+                    else:
+                        st.error("No valid path found connecting source to sink with current matrix weights.")
 
     else:
         st.markdown("### 🗺️ Advanced Travelling Salesman Problem (TSP) Studio")
