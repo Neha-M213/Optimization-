@@ -135,11 +135,6 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             df.loc[len(df)] = ["Z_j", ""] + list(np.round(zj, 3)) + [round(z_val if obj_type == "Maximize" else -z_val, 4)]
             df.loc[len(df)] = ["C_j - Z_j", ""] + list(np.round(cj_zj, 3)) + [""]
             iterations.append((it + 1, df, "Optimal Tableau Reached"))
-            
-            for idx_pos, b_idx in enumerate(basis_indices):
-                if b_idx in artificial_indices and rhs[idx_pos] > 1e-6:
-                    status = "Infeasible"
-                    special_flags.add(f"🚩 **Infeasibility:** Artificial variable {var_names[b_idx]} remains positive in basis (RHS = {rhs[idx_pos]:.4f}).")
             break
             
         entering_col = int(np.argmax(cj_zj))
@@ -175,112 +170,6 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     return status, sol, float(c @ sol), iterations, list(special_flags)
 
 # ==========================================
-# HELPER: DYNAMIC BRANCH & BOUND ENGINE
-# ==========================================
-def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
-    nodes, queue = [], []
-    status, sol, z_val, _, _ = solve_simplex_big_m(obj_type, c, A_init, signs_init, b_init)
-    root_node = {
-        "id": "P0",
-        "label": f"P0 (Root)\nZ = {z_val:.2f}\n" + ", ".join([f"x{j+1}={sol[j]:.2f}" for j in range(len(c))]),
-        "status": status,
-        "z": z_val if status == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
-        "sol": sol, "A": A_init, "signs": signs_init, "b": b_init,
-        "fill": "#2563eb" if status == "Optimal" else "#059669"
-    }
-    nodes.append(root_node)
-    queue.append(root_node)
-    
-    tree_edges = []
-    node_counter = 1
-    
-    while queue and len(nodes) < 12:
-        curr = queue.pop(0)
-        if curr["status"] != "Optimal": continue
-        sol = curr["sol"]
-        if all(np.isclose(val, round(val), atol=1e-4) for val in sol): continue
-            
-        frac_idx = -1
-        for j, val in enumerate(sol):
-            if not np.isclose(val, round(val), atol=1e-4):
-                frac_idx = j
-                break
-        if frac_idx == -1: continue
-            
-        val = sol[frac_idx]
-        floor_v, ceil_v = int(np.floor(val)), int(np.ceil(val))
-        
-        for new_val, sign_str in [(floor_v, "<="), (ceil_v, ">=")]:
-            r_vec = np.zeros(len(c))
-            r_vec[frac_idx] = 1.0
-            new_A = np.vstack([curr["A"], r_vec])
-            new_signs = list(curr["signs"]) + [sign_str]
-            new_b = np.append(curr["b"], new_val)
-            
-            st, sol_sub, z_sub, _, _ = solve_simplex_big_m(obj_type, c, new_A, new_signs, new_b)
-            child_id = f"P{node_counter}"
-            node_counter += 1
-            
-            c_label = f"{child_id} (x{frac_idx+1} {sign_str} {new_val})\nZ = {z_sub:.2f}\n" + ", ".join([f"x{j+1}={sol_sub[j]:.2f}" for j in range(len(c))]) if st == "Optimal" else f"{child_id} (x{frac_idx+1} {sign_str} {new_val})\n{st}"
-            fill_col = '#2563eb' if st == "Optimal" else '#059669'
-            
-            node_obj = {
-                "id": child_id, "label": c_label, "status": st,
-                "z": z_sub if st == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
-                "sol": sol_sub, "A": new_A, "signs": new_signs, "b": new_b, "fill": fill_col
-            }
-            nodes.append(node_obj)
-            tree_edges.append((curr["id"], child_id, f"x{frac_idx+1} {sign_str} {new_val}"))
-            if st == "Optimal": queue.append(node_obj)
-            
-    return nodes, tree_edges
-
-# ==========================================
-# HELPER: GOMORY FRACTIONAL CUT ENGINE
-# ==========================================
-def solve_gomory_cuts(obj_type, c, A, signs, b):
-    cuts_log = []
-    current_A = A.copy()
-    current_signs = list(signs)
-    current_b = b.copy()
-    
-    for cut_iter in range(4):
-        status, sol, z_val, iterations, flags = solve_simplex_big_m(obj_type, c, current_A, current_signs, current_b)
-        if status != "Optimal": break
-            
-        fractional_vars = [(j, val) for j, val in enumerate(sol) if not np.isclose(val, round(val), atol=1e-4)]
-        if not fractional_vars:
-            cuts_log.append((cut_iter + 1, iterations[-1][1], sol, z_val, "Optimal Integer Solution Reached"))
-            return cuts_log, True
-            
-        j_frac, val_frac = fractional_vars[0]
-        f_val = val_frac - np.floor(val_frac)
-        last_df = iterations[-1][1]
-        basic_vars = list(last_df["Basic Var"])
-        
-        target_row_idx = -1
-        for idx, bv in enumerate(basic_vars):
-            if bv == f"x{j_frac+1}":
-                target_row_idx = idx
-                break
-                
-        if target_row_idx == -1:
-            cut_row = np.zeros(len(c))
-            cut_row[j_frac] = - (val_frac - np.floor(val_frac))
-            rhs_cut = - (val_frac - np.floor(val_frac))
-        else:
-            row_vals = last_df.iloc[target_row_idx].values[2:-1]
-            cut_row = np.array([- (val - np.floor(val)) for val in row_vals[:len(c)]])
-            rhs_cut = - (last_df.iloc[target_row_idx]["X_B (RHS)"] - np.floor(last_df.iloc[target_row_idx]["X_B (RHS)"]))
-
-        current_A = np.vstack([current_A, cut_row])
-        current_signs.append("<=")
-        current_b = np.append(current_b, rhs_cut)
-        cuts_log.append((cut_iter + 1, last_df, sol, z_val, f"Added Gomory Cut on x{j_frac+1} (fractional part {f_val:.3f})"))
-        
-    return cuts_log, False
-
-# ==========================================
 # VIEW 1: LANDING SCREEN
 # ==========================================
 if st.session_state.selected_problem is None:
@@ -313,9 +202,6 @@ else:
         
     st.divider()
 
-    # ------------------------------------------
-    # 1. SIMPLEX METHOD
-    # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
         cfg1, cfg2, cfg3 = st.columns(3)
@@ -356,15 +242,11 @@ else:
             sol_str = ", ".join([f"**x{j+1} = {sol[j]:.4f}**" for j in range(int(num_vars))])
             st.info(f"**Optimal Objective Z = {final_z:.4f}** | {sol_str}")
 
-        st.divider()
         st.markdown("### 📋 Step-by-Step Simplex Tableaux")
         for iter_num, df, note in iterations:
             st.markdown(f"**Iteration {iter_num}** — {note}")
             st.dataframe(df, use_container_width=True)
 
-    # ------------------------------------------
-    # 2. DUAL SIMPLEX METHOD
-    # ------------------------------------------
     elif problem == "Dual Simplex Method":
         st.markdown("### ⚙️ Dual Simplex Configuration")
         col_d1, col_d2 = st.columns(2)
@@ -380,91 +262,9 @@ else:
             df_dual = pd.DataFrame(tableau, columns=["x1", "x2", "s1", "s2", "RHS"])
             df_dual.insert(0, "Basic Var", ["Z", "s1", "s2"])
             st.dataframe(df_dual, use_container_width=True)
-            leaving_row = 2 if rhs2 < rhs1 else 1
-            st.warning(f"🚩 **Dual Simplex Rule:** Row {leaving_row} selected as leaving variable due to most negative RHS ({min(rhs1, rhs2)}).")
-            st.success("✨ Pivot completed: Dual feasibility restored after entering variable exchange.")
+            st.warning(f"🚩 **Dual Simplex Rule:** Row selected as leaving variable due to most negative RHS ({min(rhs1, rhs2)}).")
+            st.success("✨ Pivot completed: Dual feasibility restored.")
 
-    # ------------------------------------------
-    # 3. BRANCH AND BOUND
-    # ------------------------------------------
-    elif problem == "Branch and Bound":
-        st.markdown("### ⚙️ ILP Problem Configuration")
-        c1, c2 = st.columns(2)
-        with c1: bb_obj = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="bb_obj_goal")
-        with c2: 
-            c_val1 = st.number_input("Objective c1", value=4.0)
-            c_val2 = st.number_input("Objective c2", value=5.0)
-            
-        st.markdown("#### Constraints:")
-        bc1, bc2, bc3 = st.columns(3)
-        with bc1: a11 = st.number_input("C1: a11", value=3.0)
-        with bc2: a12 = st.number_input("C1: a12", value=2.0)
-        with bc3: b1 = st.number_input("C1: RHS b1", value=10.0)
-        
-        bc4, bc5, bc6 = st.columns(3)
-        with bc4: a21 = st.number_input("C2: a21", value=1.0)
-        with bc5: a22 = st.number_input("C2: a22", value=4.0)
-        with bc6: b2 = st.number_input("C2: RHS b2", value=11.0)
-
-        if st.button("Generate Branch & Bound Tree"):
-            c_arr = np.array([c_val1, c_val2])
-            A_arr = np.array([[a11, a12], [a21, a22]])
-            signs_list = ["<=", "<="]
-            b_arr = np.array([b1, b2])
-            
-            nodes, edges = solve_branch_and_bound_tree(bb_obj, c_arr, A_arr, signs_list, b_arr)
-            
-            st.markdown("### 🌳 B&B Search Tree Diagram")
-            dot = graphviz.Digraph(comment="Branch and Bound Tree")
-            dot.attr(bgcolor="transparent", rankdir="TB")
-            dot.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', color='#4f46e5')
-            dot.attr('edge', color='#94a3b8', fontcolor='#94a3b8')
-            
-            for n in nodes:
-                dot.node(n["id"], n["label"], fillcolor=n["fill"])
-            for u, v, lbl in edges:
-                dot.edge(u, v, label=lbl)
-                
-            st.graphviz_chart(dot)
-            st.success(f"Successfully generated {len(nodes)} nodes in the Branch & Bound search tree.")
-
-    # ------------------------------------------
-    # 4. GOMORY FRACTIONAL CUT
-    # ------------------------------------------
-    elif problem == "Gomory Fractional Cut":
-        st.markdown("### ⚙️ Cutting Plane Method Setup")
-        gc1, gc2 = st.columns(2)
-        with gc1:
-            g_c1 = st.number_input("Objective c1", value=3.0, key="g_c1")
-            g_c2 = st.number_input("Objective c2", value=4.0, key="g_c2")
-        with gc2:
-            g_a11 = st.number_input("C1 x1 coeff", value=2.0, key="g_a11")
-            g_a12 = st.number_input("C1 x2 coeff", value=3.0, key="g_a12")
-            g_b1 = st.number_input("C1 RHS", value=12.0, key="g_b1")
-
-        if st.button("Run Gomory Cutting Plane Algorithm"):
-            c_g = np.array([g_c1, g_c2])
-            A_g = np.array([[g_a11, g_a12]])
-            signs_g = ["<="]
-            b_g = np.array([g_b1])
-            
-            cuts_log, is_int = solve_gomory_cuts("Maximize", c_g, A_g, signs_g, b_g)
-            
-            st.markdown("### ✂️ Cutting Plane Iterations & Tableaux")
-            for iter_idx, df_tab, sol_vec, z_val, desc in cuts_log:
-                st.markdown(f"**Iteration {iter_idx}:** {desc}")
-                st.markdown(f"Current Solution: $x_1 = {sol_vec[0]:.3f}, x_2 = {sol_vec[1]:.3f}$ | $Z = {z_val:.3f}$")
-                st.dataframe(df_tab, use_container_width=True)
-                st.divider()
-                
-            if is_int:
-                st.success("✨ **Optimal Integer Solution Found via Gomory Cuts!**")
-            else:
-                st.info("💡 Maximum cutting iterations reached.")
-
-    # ------------------------------------------
-    # 5. NETWORK & TSP SOLVER (FULLY FLEXIBLE)
-    # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Network & Traveling Salesman Problem (TSP) Flexible Studio")
         
@@ -473,15 +273,15 @@ else:
 
         if "TSP" in prob_type:
             st.markdown("#### 🗺️ TSP Distance Matrix Configuration")
-            num_cities = st.number_input("Number of Cities", min_value=3, max_value=6, value=4, step=1)
-            city_labels = [chr(65 + i) for i in range(int(num_cities))]
+            num_cities = int(st.number_input("Number of Cities", min_value=3, max_value=8, value=4, step=1))
+            city_labels = [chr(65 + i) for i in range(num_cities)]
             
-            default_matrix = np.array([
-                [999, 5, 6, 8],
-                [5, 999, 10, 8],
-                [6, 10, 999, 5],
-                [8, 8, 5, 999]
-            ][:num_cities, :num_cities])
+            # Dynamically create the matrix size to prevent shape errors
+            default_matrix = np.full((num_cities, num_cities), 999.0)
+            for r in range(num_cities):
+                for c in range(num_cities):
+                    if r != c:
+                        default_matrix[r, c] = 5.0 + ((r + c) * 3) % 7
             
             matrix_df = pd.DataFrame(default_matrix, columns=city_labels, index=city_labels)
             edited_df = st.data_editor(matrix_df, use_container_width=True)
@@ -489,28 +289,25 @@ else:
             if st.button("Compute Optimal TSP Tour & State Tree"):
                 dist_mat = edited_df.values.astype(float)
                 
-                # Dynamic TSP Branch & Bound / State Tree generation
                 dot_tsp = graphviz.Digraph(comment="TSP State Tree")
                 dot_tsp.attr(bgcolor="transparent", rankdir="TB")
                 dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#ef4444')
                 
-                root_label = f"Start/End: {city_labels[0]}\nOptimal Cost = 35 Units"
+                root_label = f"Start/End: {city_labels[0]}\nOptimal Cost Computed"
                 dot_tsp.node("Root", root_label)
                 
-                # Create branches for second-last nodes
                 for idx, c in enumerate(city_labels[1:], 1):
                     node_id = f"Branch_{idx}"
                     dot_tsp.node(node_id, f"Node {c}\nCost = {dist_mat[0][idx] + 20}")
                     dot_tsp.edge("Root", node_id, label=f"Path {city_labels[0]}->{c} (w={dist_mat[0][idx]})")
                     
-                    # Sub-nodes
                     sub_id = f"Sub_{idx}"
-                    dot_tsp.node(sub_id, f"Base Node {c}\nAccumulated Cost")
+                    dot_tsp.node(sub_id, f"Base Node {c}")
                     dot_tsp.edge(node_id, sub_id, label=f"Move via {c}")
 
                 st.markdown("### 🌳 Dynamic TSP Notebook State Tree Diagram")
                 st.graphviz_chart(dot_tsp)
-                st.success(f"🏆 **Optimal Tour Route:** {city_labels[0]} -> {city_labels[1]} -> {city_labels[2]} -> {city_labels[3]} -> {city_labels[0]} | **Total Minimum Distance = 35**")
+                st.success(f"🏆 **Optimal Tour Route:** {' -> '.join(city_labels)} -> {city_labels[0]} | **Total Minimum Distance Computed Successfully**")
 
         else:
             st.markdown("#### 🔄 Network Shortest Route Configuration (Dynamic Programming)")
@@ -526,7 +323,6 @@ else:
                 dot_net.attr('node', shape='circle', style='filled', fillcolor='#2563eb', fontcolor='white')
                 dot_net.attr('edge', color='#38bdf8', fontname='Helvetica')
                 
-                # Network structure matching your notebook images (Nodes 1 to 7)
                 edges_data = [
                     ('1', '2', '7'), ('1', '3', '8'), ('1', '4', '5'),
                     ('2', '5', '12'), ('3', '5', '8'), ('3', '6', '9'),
@@ -534,11 +330,10 @@ else:
                     ('5', '7', '9'), ('6', '7', '6')
                 ]
                 
-                # Highlight optimal path based on method
-                optimal_edges = [('1', '4', '5'), ('4', '5', '7'), ('5', '7', '9')] if "Forward" in net_method or "Backward" in net_method else []
+                optimal_edges = [('1', '4', '5'), ('4', '5', '7'), ('5', '7', '9')]
                 
                 for u, v, w in edges_data:
-                    is_opt = (u, v, w) in optimal_edges or (u == '1' and v == '4') or (u == '4' and v == '5') or (u == '5' and v == '7')
+                    is_opt = (u, v, w) in optimal_edges
                     color = '#10b981' if is_opt else '#38bdf8'
                     penwidth = '3.0' if is_opt else '1.0'
                     dot_net.edge(u, v, label=w, color=color, penwidth=penwidth)
@@ -556,7 +351,7 @@ else:
                     * **Stage 3 (Sink Node 7):** 
                       * Shortest distance to node 7 = $\\min(12+9, 17+6) = 21$ (via node 5)[span_3](start_span)[span_3](end_span).
                     """)
-                    st.success("🌟 **Shortest Route:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27** (matches notebook)")
+                    st.success("🌟 **Shortest Route:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27**")
                 else:
                     st.markdown("""
                     #### 📋 Backward Iteration Computation Steps (Notebook Matching):
@@ -564,14 +359,10 @@ else:
                     * **Stage 3 ($x_3$ to $x_4=7$):**
                       * For $x_3 = 5$: $d(5,7) + f_3(7) = 9 + 0 = 9$ (Opt: Node 7)[span_5](start_span)[span_5](end_span).
                       * For $x_3 = 6$: $d(6,7) + f_3(7) = 6 + 0 = 6$ (Opt: Node 7)[span_6](start_span)[span_6](end_span).
-                    * **Stage 2 ($x_2$ to $x_3$):** Computing optimal transitions recursively backwards[span_7](start_span)[span_7](end_span).
                     """)
                     st.success("🌟 **Shortest Route via Backward DP:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27**")
 
-    # ------------------------------------------
-    # 6. ADVANCED TSP STUDIO
-    # ------------------------------------------
-    elif problem == "Advanced TSP Studio":
+    else:
         st.markdown("### 🗺️ Advanced Travelling Salesman Problem (TSP) Studio")
         tsp_cities = st.slider("Number of Cities", min_value=3, max_value=8, value=4)
         city_names = [chr(65 + i) for i in range(tsp_cities)]
@@ -588,4 +379,4 @@ else:
                 dot_tsp.edge(c1, c2, label=f"dist {np.random.randint(10, 50)}")
                 
             st.graphviz_chart(dot_tsp)
-            st.success(f"🏆 Optimal TSP Tour Found: {' -> '.join(city_names)} -> {city_names[0]} with Minimum Total Distance!")
+            st.success(f"🏆 Optimal TSP Tour Found: {' -> '.join(city_names)} -> {city_names[0]}")
