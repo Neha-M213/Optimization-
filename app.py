@@ -483,7 +483,7 @@ else:
             with r_cols[3]: bb_b.append(st.number_input(f"b_{i}", value=12.0 if i==0 else 10.0, key=f"bb_b_{i}"))
             bb_A.append(r_a)
 
-        if st.button("🚀 Generate Branch & Bound Search Tree"):
+        if st.button("🚀 Generate Branch & Bound Search Tree & Geometric Cuts"):
             nodes, tree_edges = solve_branch_and_bound_tree(
                 bb_obj, np.array(bb_c_vals), np.array(bb_A), bb_signs, np.array(bb_b)
             )
@@ -500,6 +500,96 @@ else:
             st.markdown("### 🌳 Branch and Bound Solution Tree")
             st.graphviz_chart(dot_bb)
             st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
+
+            # --- NEW: GEOMETRIC SUBPROBLEM & STRIP DELETION VISUALIZATION GALLERY ---
+            st.divider()
+            st.markdown("### 📐 Subproblem Geometry, Strip Deletion & LPP Construction Gallery")
+            st.caption("Each subproblem node below displays its updated constraint set, strip deletion cuts, labeled corner points, and feasible region polygon.")
+
+            max_rhs = max([abs(val) for val in bb_b]) if bb_b else 10.0
+            max_bound = max(max_rhs * 1.4, 10.0)
+            x_line = np.linspace(0, max_bound, 200)
+            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#ef4444', '#818cf8']
+
+            for idx, nd in enumerate(nodes):
+                node_id = nd["id"]
+                n_status = nd["status"]
+                n_sol = nd["sol"]
+                n_z = nd["z"]
+                sub_A = nd["A"]
+                sub_signs = nd["signs"]
+                sub_b = nd["b"]
+
+                with st.expander(f"📌 Subproblem {node_id} (Status: {n_status} | Z = {n_z:.2f if n_status=='Optimal' else 0})", expanded=(idx==0)):
+                    col_g1, col_g2 = st.columns([3, 2])
+                    
+                    with col_g1:
+                        # Build Plotly Subproblem Feasible Region Graph
+                        fig_sub = go.Figure()
+                        valid_verts = get_2d_feasible_polygon(sub_A, sub_signs, sub_b, max_bound)
+                        
+                        if len(valid_verts) >= 3:
+                            poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
+                            poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
+                            fig_sub.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(56, 189, 248, 0.25)", line=dict(color="#38bdf8", width=2), name=f"Feasible Region {node_id}"))
+
+                        # Plot all constraints including branching cuts
+                        for c_idx in range(len(sub_b)):
+                            a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
+                            s_sign = sub_signs[c_idx]
+                            c_col = colors[c_idx % len(colors)]
+                            
+                            if c_idx >= len(bb_A):
+                                c_label = f"Branching Cut {c_idx}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                line_width = 3
+                                dash_style = "dash"
+                            else:
+                                c_label = f"Constraint {c_idx+1}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                line_width = 2
+                                dash_style = "solid"
+
+                            if abs(a2) > 1e-6:
+                                y_vals = (b_val - a1 * x_line) / a2
+                                mask = (y_vals >= 0) & (y_vals <= max_bound)
+                                if np.any(mask):
+                                    fig_sub.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)))
+                            elif abs(a1) > 1e-6:
+                                x_const = b_val / a1
+                                if 0 <= x_const <= max_bound:
+                                    fig_sub.add_trace(go.Scatter(x=[x_const, x_const], y=[0, max_bound], mode="lines", name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)))
+
+                        # Plot corner points
+                        if valid_verts:
+                            vx, vy = zip(*valid_verts)
+                            fig_sub.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"({p[0]}, {p[1]})" for p in valid_verts], textposition="top right", marker=dict(size=10, color="#ffffff", line=dict(width=2, color="#f472b6")), name="Corner Points"))
+
+                        # Plot subproblem solution vertex
+                        if n_status == "Optimal":
+                            fig_sub.add_trace(go.Scatter(x=[n_sol[0]], y=[n_sol[1]], mode="markers+text", text=[f"{node_id} Sol: ({n_sol[0]:.2f}, {n_sol[1]:.2f})"], textposition="bottom right", marker=dict(size=14, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Subproblem Solution"))
+
+                        fig_sub.update_layout(xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", xaxis=dict(range=[0, max_bound]), yaxis=dict(range=[0, max_bound]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=420, margin=dict(l=20, r=20, t=30, b=20))
+                        st.plotly_chart(fig_sub, use_container_width=True, key=f"plot_{node_id}")
+
+                    with col_g2:
+                        st.markdown(f"#### 📋 LPP Formulation for `{node_id}`")
+                        st.markdown(f"**Objective Goal:** `{bb_obj}`")
+                        st.markdown(f"**Objective Function:** $Z = {bb_c_vals[0]}x_1 + {bb_c_vals[1]}x_2$")
+                        st.markdown("**Active Constraints & Strip Deletion Cuts:**")
+                        
+                        constraint_list_md = ""
+                        for c_idx in range(len(sub_b)):
+                            a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
+                            s_sign = sub_signs[c_idx]
+                            tag = " *(Branching Cut)*" if c_idx >= len(bb_A) else ""
+                            constraint_list_md += f"- ${a1}x_1 + {a2}x_2 {s_sign} {b_val}${tag}\n"
+                        st.markdown(constraint_list_md)
+                        st.markdown(f"- $x_1, x_2 \\ge 0$ (Non-negativity)")
+                        
+                        st.divider()
+                        if n_status == "Optimal":
+                            st.success(f"**Subproblem Status:** Optimal\n\n**Solution:** $x_1 = {n_sol[0]:.4f}, x_2 = {n_sol[1]:.4f}$\n\n**Objective Value:** $Z = {n_z:.4f}$")
+                        else:
+                            st.error(f"**Subproblem Status:** {n_status}\n\n*This branch is pruned/infeasible.*")
 
     # ------------------------------------------
     # 4. NETWORK & TSP SOLVER (Stagewise + Unrolled Bellman-Held-Karp TSP)
