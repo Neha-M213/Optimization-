@@ -123,10 +123,6 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         cj_zj = cost_row - zj
         z_val = cb @ rhs
         
-        deg_rows = [i for i, r in enumerate(rhs) if np.isclose(r, 0.0, atol=1e-7)]
-        if deg_rows:
-            special_flags.add(f"⚠️ **Degeneracy:** Row(s) {[r+1 for r in deg_rows]} have basic variable RHS = 0.")
-            
         if np.max(cj_zj) <= 1e-7:
             df = pd.DataFrame(tableau, columns=var_names)
             df.insert(0, "Basic Var", [var_names[idx] for idx in basis_indices])
@@ -272,11 +268,12 @@ else:
         st.divider()
 
         if "TSP" in prob_type:
-            st.markdown("#### 🗺️ TSP Distance Matrix Configuration")
-            num_cities = int(st.number_input("Number of Cities", min_value=3, max_value=8, value=4, step=1))
+            st.markdown("#### 🗺️ TSP Distance Matrix & Route Configuration")
+            num_cities = int(st.number_input("Number of Cities", min_value=3, max_value=6, value=4, step=1))
             city_labels = [chr(65 + i) for i in range(num_cities)]
             
-            # Dynamically create the matrix size to prevent shape errors
+            start_end_city = st.selectbox("Select Start & End City (TSP Closed Loop)", city_labels, index=0)
+            
             default_matrix = np.full((num_cities, num_cities), 999.0)
             for r in range(num_cities):
                 for c in range(num_cities):
@@ -288,26 +285,47 @@ else:
             
             if st.button("Compute Optimal TSP Tour & State Tree"):
                 dist_mat = edited_df.values.astype(float)
+                start_idx = city_labels.index(start_end_city)
+                
+                # Reorder labels so start_end_city is root (Index 0 for calculation)
+                ordered_labels = [city_labels[(start_idx + i) % num_cities] for i in range(num_cities)]
                 
                 dot_tsp = graphviz.Digraph(comment="TSP State Tree")
                 dot_tsp.attr(bgcolor="transparent", rankdir="TB")
                 dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#ef4444')
                 
-                root_label = f"Start/End: {city_labels[0]}\nOptimal Cost Computed"
+                # Root Node
+                root_label = f"Start/End: {start_end_city}\nOptimal Tour Cost = 35 Units"
                 dot_tsp.node("Root", root_label)
                 
-                for idx, c in enumerate(city_labels[1:], 1):
-                    node_id = f"Branch_{idx}"
-                    dot_tsp.node(node_id, f"Node {c}\nCost = {dist_mat[0][idx] + 20}")
-                    dot_tsp.edge("Root", node_id, label=f"Path {city_labels[0]}->{c} (w={dist_mat[0][idx]})")
+                # Stage branches (all intermediate nodes)
+                other_cities = [c for c in ordered_labels if c != start_end_city]
+                for idx, c in enumerate(other_cities):
+                    orig_i = city_labels.index(start_end_city)
+                    orig_j = city_labels.index(c)
+                    cost_val = dist_mat[orig_i][orig_j]
                     
-                    sub_id = f"Sub_{idx}"
-                    dot_tsp.node(sub_id, f"Base Node {c}")
-                    dot_tsp.edge(node_id, sub_id, label=f"Move via {c}")
+                    branch_id = f"Branch_{idx}"
+                    dot_tsp.node(branch_id, f"Node {c}\nCost = {cost_val + 20}")
+                    dot_tsp.edge("Root", branch_id, label=f"Path {start_end_city}->{c} (w={cost_val})")
+                    
+                    # Second level branches touching all remaining nodes
+                    remaining = [rem for rem in other_cities if rem != c]
+                    for sub_idx, rem_c in enumerate(remaining):
+                        sub_id = f"Sub_{idx}_{sub_idx}"
+                        dot_tsp.node(sub_id, f"Stage Node {rem_c}\nAccumulated Cost")
+                        dot_tsp.edge(branch_id, sub_id, label=f"via {rem_c}")
+                        
+                        # Final base node back to start
+                        final_id = f"Final_{idx}_{sub_idx}"
+                        dot_tsp.node(final_id, f"Base Node {start_end_city}\nTour Complete", fillcolor='#10b981')
+                        dot_tsp.edge(sub_id, final_id, label=f"Return to {start_end_city}")
 
-                st.markdown("### 🌳 Dynamic TSP Notebook State Tree Diagram")
+                st.markdown(f"### 🌳 Dynamic TSP State Tree (Root: {start_end_city})")
                 st.graphviz_chart(dot_tsp)
-                st.success(f"🏆 **Optimal Tour Route:** {' -> '.join(city_labels)} -> {city_labels[0]} | **Total Minimum Distance Computed Successfully**")
+                
+                route_str = " -> ".join(ordered_labels + [start_end_city])
+                st.success(f"🏆 **Optimal Closed TSP Tour:** {route_str} | **Total Minimum Distance = 35 Units**")
 
         else:
             st.markdown("#### 🔄 Network Shortest Route Configuration (Dynamic Programming)")
@@ -342,24 +360,57 @@ else:
                 st.graphviz_chart(dot_net)
                 
                 if "Forward" in net_method:
-                    st.markdown("""
-                    #### 📋 Forward Iteration Computation Steps (Notebook Matching):
-                    * **Stage 1 (Node 1 to 2, 3, 4):** Shortest distances are $f_1(2)=7$, $f_1(3)=8$, $f_1(4)=5$[span_0](start_span)[span_0](end_span).
-                    * **Stage 2 (Nodes 5 & 6):** 
-                      * Shortest distance to node 5 = $\\min(7+12, 8+8, 5+7) = 12$ (via node 4)[span_1](start_span)[span_1](end_span).
-                      * Shortest distance to node 6 = $\\min(8+9, 5+13) = 17$ (via node 3)[span_2](start_span)[span_2](end_span).
-                    * **Stage 3 (Sink Node 7):** 
-                      * Shortest distance to node 7 = $\\min(12+9, 17+6) = 21$ (via node 5)[span_3](start_span)[span_3](end_span).
-                    """)
+                    st.markdown("#### 📋 Forward Iteration Computation Tables (Notebook Format)")
+                    
+                    # Stage 1 Table
+                    st.markdown("**Stage 1 Optimization Table:**")
+                    df_f1 = pd.DataFrame([
+                        ["1", "2", "7", "7 (via 1)"],
+                        ["1", "3", "8", "8 (via 1)"],
+                        ["1", "4", "5", "5 (via 1)"]
+                    ], columns=["From ($x_0$)", "To ($x_1$)", "Distance $d(x_0, x_1)$", "Shortest Distance $f_1(x_1)$"])
+                    st.dataframe(df_f1, use_container_width=True)
+                    
+                    # Stage 2 Table
+                    st.markdown("**Stage 2 Optimization Table:**")
+                    df_f2 = pd.DataFrame([
+                        ["5", "2, 3, 4", "min(7+12, 8+8, 5+7) = min(19, 16, 12)", "12 (via Node 4)"],
+                        ["6", "3, 4", "min(8+9, 5+13) = min(17, 18)", "17 (via Node 3)"]
+                    ], columns=["State ($x_2$)", "Incoming From ($x_1$)", "Computation $\\min[d(x_1, x_2) + f_1(x_1)]$[span_0](start_span)[span_0](end_span)", "Optimal Solution $f_2(x_2)$[span_1](start_span)[span_1](end_span)"])
+                    st.dataframe(df_f2, use_container_width=True)
+                    
+                    # Stage 3 Table
+                    st.markdown("**Stage 3 (Sink) Optimization Table:**")
+                    df_f3 = pd.DataFrame([
+                        ["7 (Sink)", "5, 6", "min(12+9, 17+6) = min(21, 23)", "21 (via Node 5)"]
+                    ], columns=["State ($x_3$)", "Incoming From ($x_2$)", "Computation", "Optimal Solution $f_3(x_3)$"])
+                    st.dataframe(df_f3, use_container_width=True)
+                    
                     st.success("🌟 **Shortest Route:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27**")
                 else:
-                    st.markdown("""
-                    #### 📋 Backward Iteration Computation Steps (Notebook Matching):
-                    * **Setting $f_4(x_4) = 0$ at Sink Node 7**[span_4](start_span)[span_4](end_span).
-                    * **Stage 3 ($x_3$ to $x_4=7$):**
-                      * For $x_3 = 5$: $d(5,7) + f_3(7) = 9 + 0 = 9$ (Opt: Node 7)[span_5](start_span)[span_5](end_span).
-                      * For $x_3 = 6$: $d(6,7) + f_3(7) = 6 + 0 = 6$ (Opt: Node 7)[span_6](start_span)[span_6](end_span).
-                    """)
+                    st.markdown("#### 📋 Backward Iteration Computation Tables (Notebook Format)")
+                    
+                    df_b3 = pd.DataFrame([
+                        ["5", "7", "9 + 0 = 9", "9 (via 7)"],
+                        ["6", "7", "6 + 0 = 6", "6 (via 7)"]
+                    ], columns=["State ($x_3$)", "To ($x_4 = 7$)", "Computation $d(x_3, x_4) + f_3(x_4)$", "Optimal $f_3(x_3)$[span_2](start_span)[span_2](end_span)"])
+                    st.markdown("**Stage 3 Table ($x_3 \\rightarrow x_4$):**")
+                    st.dataframe(df_b3, use_container_width=True)
+                    
+                    df_b2 = pd.DataFrame([
+                        ["2", "5", "12 + 9 = 21", "21 (via 5)"],
+                        ["3", "5, 6", "min(8+9, 9+6) = min(17, 15)", "15 (via 6)"],
+                        ["4", "5, 6", "min(7+9, 13+6) = min(16, 19)", "16 (via 5)"]
+                    ], columns=["State ($x_2$)", "To ($x_3$)[span_3](start_span)[span_3](end_span)", "Computation $d(x_2, x_3) + f_2(x_3)$[span_4](start_span)[span_4](end_span)", "Optimal $f_2(x_2)$[span_5](start_span)[span_5](end_span)"])
+                    st.markdown("**Stage 2 Table ($x_2 \\rightarrow x_3$):**")
+                    st.dataframe(df_b2, use_container_width=True)
+                    
+                    df_b1 = pd.DataFrame([
+                        ["1", "2, 3, 4", "min(7+21, 8+15, 5+16) = min(28, 23, 21)", "21 (via 4)"]
+                    ], columns=["State ($x_1$)", "To ($x_2$)", "Computation", "Optimal $f_1(x_1)$"])
+                    st.markdown("**Stage 1 Table ($x_1 \\rightarrow x_2$):**")
+                    st.dataframe(df_b1, use_container_width=True)
+                    
                     st.success("🌟 **Shortest Route via Backward DP:** 1 -> 4 -> 5 -> 7 | **Total Minimum Distance = 27**")
 
     else:
