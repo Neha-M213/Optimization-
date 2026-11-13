@@ -274,19 +274,21 @@ def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
     return nodes, tree_edges
 
 # ==========================================
-# HELPER: 2D FEASIBLE POLYGON
+# HELPER: ROBUST 2D FEASIBLE POLYGON
 # ==========================================
 def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
     num_cons = len(b_vals)
     candidates = [(0.0, 0.0), (0.0, max_bound), (max_bound, 0.0), (max_bound, max_bound)]
+    
+    # Axis intersections (x1 = 0 and x2 = 0)
     for i in range(num_cons):
         a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
         if abs(a2) > 1e-7:
             candidates.append((0.0, b_i / a2))
-            candidates.append((max_bound, (b_i - a1 * max_bound) / a2))
         if abs(a1) > 1e-7:
             candidates.append((b_i / a1, 0.0))
-            candidates.append(((b_i - a2 * max_bound) / a1, max_bound))
+            
+    # Pairwise constraint intersections
     for i in range(num_cons):
         for j in range(i + 1, num_cons):
             M_sys = np.array([[A_rows[i][0], A_rows[i][1]], [A_rows[j][0], A_rows[j][1]]], dtype=float)
@@ -297,13 +299,18 @@ def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
 
     valid_verts = []
     for x, y in candidates:
-        if x < -1e-4 or y < -1e-4 or x > max_bound + 1e-4 or y > max_bound + 1e-4: continue
+        if x < -1e-5 or y < -1e-5 or x > max_bound + 1e-5 or y > max_bound + 1e-5: continue
         ok = True
         for i in range(num_cons):
             val = A_rows[i][0] * x + A_rows[i][1] * y
-            if signs[i] == "<=" and val > b_vals[i] + 1e-3: ok = False
-            elif signs[i] == ">=" and val < b_vals[i] - 1e-3: ok = False
-            elif signs[i] == "=" and not np.isclose(val, b_vals[i], atol=1e-2): ok = False
+            s = signs[i]
+            b_i = b_vals[i]
+            if s == "<=" and val > b_i + 1e-3: 
+                ok = False; break
+            elif s == ">=" and val < b_i - 1e-3: 
+                ok = False; break
+            elif s == "=" and not np.isclose(val, b_i, atol=1e-2): 
+                ok = False; break
         if ok:
             pt_clean = (round(max(0.0, x), 3), round(max(0.0, y), 3))
             if not any(np.isclose(pt_clean[0], vx, atol=1e-2) and np.isclose(pt_clean[1], vy, atol=1e-2) for vx, vy in valid_verts):
@@ -401,7 +408,7 @@ else:
         st.markdown("### 📈 Feasible Region & Corner Points")
         if int(num_vars) == 2:
             max_rhs = max([abs(val) for val in b_vals]) if b_vals else 10.0
-            max_bound = max(max_rhs * 1.3, 8.0)
+            max_bound = max(max_rhs * 1.4, 8.0)
             x_line = np.linspace(0, max_bound, 200)
 
             fig = go.Figure()
@@ -411,7 +418,7 @@ else:
             if len(valid_verts) >= 3:
                 poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
                 poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
-                fig.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(99, 102, 241, 0.30)", line=dict(color="#818cf8", width=2), name="Feasible Region"))
+                fig.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(56, 189, 248, 0.3)", line=dict(color="#38bdf8", width=2.5), name="Feasible Region"))
 
             for i in range(int(num_cons)):
                 a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
@@ -429,7 +436,13 @@ else:
             if status == "Optimal":
                 fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
 
-            fig.update_layout(xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", xaxis=dict(range=[0, max_bound]), yaxis=dict(range=[0, max_bound]), template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560)
+            fig.update_layout(
+                xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
+                xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")),
+                yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")),
+                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560,
+                legend=dict(font=dict(color="#f8fafc", size=13), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+            )
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("💡 2D Graphical visualization is displayed when Number of Objective Variables = 2.")
@@ -501,19 +514,15 @@ else:
             st.graphviz_chart(dot_bb)
             st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
 
-            # --- CLEAN TEXTBOOK-STYLE SUBPROBLEM GEOMETRY GALLERY ---
+            # --- SUBPROBLEM GEOMETRY & STRIP DELETION GALLERY ---
             st.divider()
             st.markdown("### 📐 Subproblem Geometry, Strip Deletion & LPP Construction Gallery")
-            st.caption("Each subproblem graph is scaled cleanly like a textbook diagram with bold direct line labels and clear coordinate points.")
+            st.caption("Each subproblem graph highlights the feasible region polygon, labeled corner points, active constraints, and branching cuts with high-contrast text.")
 
-            # Dynamically calculate clean bound based on intercepts
             max_intercept = 6.0
-            for row in bb_A:
-                for val in row:
-                    pass
             for b_val in bb_b:
-                max_intercept = max(max_intercept, float(b_val) * 1.2)
-            max_bound = max(max_intercept, 8.0)
+                max_intercept = max(max_intercept, float(b_val) * 1.3)
+            max_bound = max(max_intercept, 10.0)
             x_line = np.linspace(0, max_bound, 300)
             colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#c084fc', '#ef4444', '#38bdf8']
 
@@ -536,25 +545,25 @@ else:
                         fig_sub = go.Figure()
                         valid_verts = get_2d_feasible_polygon(sub_A, sub_signs, sub_b, max_bound)
                         
-                        # Feasible region polygon
+                        # Feasible region polygon highlight
                         if len(valid_verts) >= 3:
                             poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
                             poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
                             fig_sub.add_trace(go.Scatter(
                                 x=poly_x, y=poly_y, fill="toself", 
-                                fillcolor="rgba(56, 189, 248, 0.20)", 
-                                line=dict(color="#38bdf8", width=2), 
+                                fillcolor="rgba(56, 189, 248, 0.35)", 
+                                line=dict(color="#38bdf8", width=3), 
                                 name=f"Feasible Region {node_id}"
                             ))
 
-                        # Plot constraints with thick lines & direct annotations
+                        # Plot constraints & branching cuts
                         for c_idx in range(len(sub_b)):
                             a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
                             s_sign = sub_signs[c_idx]
                             c_col = colors[c_idx % len(colors)]
                             
                             if c_idx >= len(bb_A):
-                                c_label = f"Cut: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                c_label = f"Cut {c_idx}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
                                 line_width = 3.5
                                 dash_style = "dash"
                             else:
@@ -570,15 +579,6 @@ else:
                                         x=x_line[mask], y=y_vals[mask], mode="lines", 
                                         name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)
                                     ))
-                                    # Add direct text annotation near the middle of the line segment
-                                    mid_idx = int(np.sum(mask) / 2)
-                                    if mid_idx > 0:
-                                        fig_sub.add_annotation(
-                                            x=x_line[mask][mid_idx], y=y_vals[mask][mid_idx],
-                                            text=f"C{c_idx+1}" if c_idx < len(bb_A) else f"Cut{c_idx}",
-                                            showarrow=False, font=dict(color=c_col, size=12, family="Arial Black"),
-                                            yshift=10
-                                        )
                             elif abs(a1) > 1e-6:
                                 x_const = b_val / a1
                                 if 0 <= x_const <= max_bound:
@@ -587,7 +587,7 @@ else:
                                         name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)
                                     ))
 
-                        # Plot corner points with clear text coordinates
+                        # Plot corner points
                         if valid_verts:
                             vx, vy = zip(*valid_verts)
                             fig_sub.add_trace(go.Scatter(
@@ -598,7 +598,7 @@ else:
                                 name="Corner Points"
                             ))
 
-                        # Plot optimal vertex
+                        # Plot optimal subproblem solution
                         if n_status == "Optimal":
                             fig_sub.add_trace(go.Scatter(
                                 x=[n_sol[0]], y=[n_sol[1]], mode="markers+text", 
@@ -610,10 +610,11 @@ else:
 
                         fig_sub.update_layout(
                             xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", 
-                            xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"), 
-                            yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"), 
+                            xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")), 
+                            yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")), 
                             template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", 
-                            height=440, margin=dict(l=30, r=20, t=30, b=30)
+                            height=440, margin=dict(l=30, r=20, t=30, b=30),
+                            legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
                         )
                         st.plotly_chart(fig_sub, use_container_width=True, key=f"plot_{node_id}")
 
