@@ -73,17 +73,15 @@ def go_home():
     st.session_state.selected_problem = None
 
 # ==========================================
-# HELPER: STYLED TABLEAU (DEGENERACY & ALTERNATIVE OPTIMA)
+# HELPER: TABLEAU BUILDER WITH RATIO ROW
 # ==========================================
-def build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None):
+def build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None):
     num_cons = len(basis_indices)
     cb = cost_row[basis_indices]
     
     cj_display = ["", "C_j ->", ""] + [round(float(val), 3) if abs(val) < 1e4 else ("-M" if val < 0 else "M") for val in cost_row] + [""]
     
     rows = [cj_display]
-    deg_row_indices = []
-    
     for i in range(num_cons):
         cb_str = round(float(cb[i]), 3) if abs(cb[i]) < 1e4 else ("-M" if cb[i] < 0 else "M")
         row_vals = [
@@ -94,9 +92,7 @@ def build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, c
             ratios[i] if ratios is not None else "—"
         ]
         rows.append(row_vals)
-        if abs(rhs[i]) <= 1e-6:
-            deg_row_indices.append(i + 1)
-            
+        
     z_disp = round(float(z_val if obj_type == "Maximize" else -z_val), 4)
     zj_row = ["", "Z_j", z_disp] + [round(float(val), 3) for val in zj] + [""]
     cj_zj_row = ["", "C_j - Z_j", ""] + [round(float(val), 3) for val in cj_zj] + [""]
@@ -109,32 +105,7 @@ def build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, c
     
     cols = ["C_B", "X_B", "b"] + var_names + ["Ratio"]
     df = pd.DataFrame(rows, columns=cols)
-    
-    alt_col_indices = []
-    is_optimal = np.max(cj_zj) <= 1e-7
-    if is_optimal:
-        for idx, val in enumerate(cj_zj):
-            var_name = var_names[idx]
-            if abs(val) <= 1e-6 and var_name not in [var_names[b] for b in basis_indices]:
-                alt_col_indices.append(idx + 3)
-
-    def highlight_features(s):
-        styles = [''] * len(s)
-        row_idx = s.name
-        if row_idx in deg_row_indices:
-            styles = ['background-color: rgba(245, 158, 11, 0.35); font-weight: bold;' for _ in s]
-        return styles
-
-    styler = df.style.apply(highlight_features, axis=1)
-    
-    if alt_col_indices:
-        col_subset = [df.columns[c] for c in alt_col_indices if c < len(df.columns)]
-        styler = styler.set_properties(
-            subset=col_subset,
-            **{'background-color': 'rgba(192, 132, 252, 0.35)', 'font-weight': 'bold'}
-        )
-
-    return styler, deg_row_indices, alt_col_indices
+    return df
 
 # ==========================================
 # HELPER: BIG-M SIMPLEX ENGINE
@@ -182,25 +153,15 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     iterations, special_flags = [], set()
     status = "Optimal"
     
-    has_degeneracy = False
-    has_alternative_optima = False
-    
     for it in range(30):
         cb = cost_row[basis_indices]
         zj = cb @ tableau
         cj_zj = cost_row - zj
         z_val = cb @ rhs
         
-        if any(abs(val) <= 1e-6 for val in rhs):
-            has_degeneracy = True
-            
-        styler, deg_rows, alt_cols = build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)
-        
-        if alt_cols:
-            has_alternative_optima = True
-        
         if np.max(cj_zj) <= 1e-7:
-            iterations.append((it + 1, styler, "Optimal Tableau Reached (All $C_j - Z_j \\le 0$)", deg_rows, alt_cols))
+            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)
+            iterations.append((it + 1, df, "Optimal Tableau Reached (All $C_j - Z_j \\le 0$)"))
             break
             
         entering_col = int(np.argmax(cj_zj))
@@ -209,7 +170,8 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         if all(col_vals <= 1e-7):
             status = "Unbounded"
             special_flags.add(f"🚩 **Unboundedness:** Pivot column {var_names[entering_col]} has entries ≤ 0.")
-            iterations.append((it + 1, styler, f"Unbounded at {var_names[entering_col]}", deg_rows, alt_cols))
+            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)
+            iterations.append((it + 1, df, f"Unbounded at {var_names[entering_col]}"))
             break
             
         valid_ratios = []
@@ -228,8 +190,8 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             
         leaving_row = min(valid_ratios, key=lambda x: x[0])[1]
         
-        styler_ratio, deg_rows_r, alt_cols_r = build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=ratio_display)
-        iterations.append((it + 1, styler_ratio, f"Entering: **{var_names[entering_col]}** | Leaving: **{var_names[basis_indices[leaving_row]]}**", deg_rows_r, alt_cols_r))
+        df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=ratio_display)
+        iterations.append((it + 1, df, f"Entering: **{var_names[entering_col]}** | Leaving: **{var_names[basis_indices[leaving_row]]}**"))
         
         pivot_val = tableau[leaving_row, entering_col]
         tableau[leaving_row] /= pivot_val
@@ -244,16 +206,10 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     sol = np.zeros(num_vars)
     for pos, b_idx in enumerate(basis_indices):
         if b_idx < num_vars: sol[b_idx] = rhs[pos]
-        
-    if has_degeneracy:
-        special_flags.add("⚠️ **Degeneracy Detected:** At least one basic variable has an RHS value of $b_i = 0$ (highlighted in amber in the table).")
-    if has_alternative_optima:
-        special_flags.add("🌟 **Alternative Optima Detected:** At least one non-basic variable has $C_j - Z_j = 0$ at optimality (highlighted in purple in the table and shown on the graph).")
-
-    return status, sol, float(c @ sol), iterations, list(special_flags), has_degeneracy, has_alternative_optima
+    return status, sol, float(c @ sol), iterations, list(special_flags)
 
 # ==========================================
-# HELPER: DUAL SIMPLEX ENGINE
+# HELPER: DUAL SIMPLEX ENGINE WITH RATIOS
 # ==========================================
 def solve_simplex_dual(obj_type, c, A, signs, b):
     num_vars = len(c)
@@ -300,12 +256,12 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
         if np.max(cj_zj) > 1e-7:
             status = "Dual Infeasible"
             special_flags.add("🚩 **Dual Infeasibility:** $C_j - Z_j > 0$ found.")
-            df = build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)[0]
+            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)
             iterations.append((it + 1, df, "Dual Infeasible Tableau"))
             break
             
         if np.all(rhs >= -1e-7):
-            df = build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)[0]
+            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)
             iterations.append((it + 1, df, "Optimal Dual Simplex Tableau Reached (All $b_i \\ge 0$)"))
             break
             
@@ -317,7 +273,7 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
         if np.all(col_vals >= -1e-7):
             status = "Infeasible"
             special_flags.add(f"🚩 **Primal Infeasibility / Dual Unboundedness:** Leaving row {leaving_row+1} has all entries $\\ge 0$ with negative RHS ($b = {rhs[leaving_row]:.4f}$).")
-            df = build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)[0]
+            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None)
             iterations.append((it + 1, df, f"Infeasible at Row {leaving_row+1}"))
             break
             
@@ -337,7 +293,7 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
             
         entering_col = min(valid_ratios, key=lambda x: x[0])[1]
         
-        df = build_styled_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=ratio_display)[0]
+        df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=ratio_display)
         iter_note = f"Leaving: **{var_names[basis_indices[leaving_row]]}** (RHS = {rhs[leaving_row]:.4f}) | Entering: **{var_names[entering_col]}**"
         iterations.append((it + 1, df, iter_note))
         
@@ -363,7 +319,7 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
 # ==========================================
 def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
     nodes, queue = [], []
-    status, sol, z_val, _, _, _, _ = solve_simplex_big_m(obj_type, c, A_init, signs_init, b_init)
+    status, sol, z_val, _, _ = solve_simplex_big_m(obj_type, c, A_init, signs_init, b_init)
     root_node = {
         "id": "P0",
         "label": f"P0 (Root)\nZ = {z_val:.2f}\n" + ", ".join([f"x{j+1}={sol[j]:.2f}" for j in range(len(c))]),
@@ -401,7 +357,7 @@ def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
             new_signs = list(curr["signs"]) + [sign_str]
             new_b = np.append(curr["b"], new_val)
             
-            st, sol_sub, z_sub, _, _, _, _ = solve_simplex_big_m(obj_type, c, new_A, new_signs, new_b)
+            st, sol_sub, z_sub, _, _ = solve_simplex_big_m(obj_type, c, new_A, new_signs, new_b)
             child_id = f"P{node_counter}"
             node_counter += 1
             
@@ -494,7 +450,7 @@ else:
     st.divider()
 
     # ------------------------------------------
-    # 1. SIMPLEX METHOD (WITH DEGENERACY & ALTERNATIVE OPTIMA HIGHLIGHTS)
+    # 1. SIMPLEX METHOD (2D & 3D SUPPORT WITH LEGIBLE LABELS)
     # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
@@ -521,7 +477,7 @@ else:
             with row_cols[int(num_vars) + 1]: b_vals.append(st.number_input(f"b_{i}", value=10.0, key=f"b_{i}"))
             A_rows.append(row_a)
 
-        status, sol, final_z, iterations, flags, is_deg, is_alt = solve_simplex_big_m(
+        status, sol, final_z, iterations, flags = solve_simplex_big_m(
             obj_type, np.array(c_vals), np.array(A_rows), signs, np.array(b_vals)
         )
 
@@ -538,13 +494,9 @@ else:
 
         st.divider()
         st.markdown("### 📋 Step-by-Step Simplex Tableaux")
-        for iter_num, styler, note, deg_rows, alt_cols in iterations:
+        for iter_num, df, note in iterations:
             st.markdown(f"**Iteration {iter_num}** — {note}")
-            if deg_rows:
-                st.caption("🟡 *Highlighted row(s): Degeneracy present ($b_i = 0$).*")
-            if alt_cols:
-                st.caption("🟣 *Highlighted column(s): Alternative Optima present ($C_j - Z_j = 0$ for non-basic variable).*")
-            st.dataframe(styler, use_container_width=True, hide_index=True)
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
         st.divider()
         st.markdown("### 📈 Feasible Region & Optimal Solution Visualisation")
@@ -573,52 +525,10 @@ else:
 
             if valid_verts:
                 vx, vy = zip(*valid_verts)
-                vert_labels = []
-                vert_colors = []
-                vert_sizes = []
-                for p in valid_verts:
-                    is_deg_vert = is_deg and any(np.isclose(p[0], sol[0], atol=1e-3) and np.isclose(p[1], sol[1], atol=1e-3) for _ in [0])
-                    if is_deg_vert:
-                        vert_labels.append(f"Degenerate Vertex: ({p[0]}, {p[1]})")
-                        vert_colors.append("#f59e0b")
-                        vert_sizes.append(14)
-                    else:
-                        vert_labels.append(f"({p[0]}, {p[1]})")
-                        vert_colors.append("#ffffff")
-                        vert_sizes.append(11)
-
-                fig.add_trace(go.Scatter(
-                    x=vx, y=vy, mode="markers+text", 
-                    text=vert_labels, textposition="top right", 
-                    marker=dict(size=vert_sizes, color=vert_colors, line=dict(width=2, color="#38bdf8")), 
-                    name="Corner Points"
-                ))
+                fig.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"CP{idx+1}: ({p[0]}, {p[1]})" for idx, p in enumerate(valid_verts)], textposition="top right", marker=dict(size=11, color="#ffffff", line=dict(width=2, color="#38bdf8")), name="Corner Points"))
 
             if status == "Optimal":
-                fig.add_trace(go.Scatter(
-                    x=[sol[0]], y=[sol[1]], mode="markers+text", 
-                    text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", 
-                    marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), 
-                    name="Primary Optimal Vertex"
-                ))
-
-                if is_alt and len(valid_verts) >= 2:
-                    opt_verts = []
-                    for p in valid_verts:
-                        val_z = c_vals[0] * p[0] + c_vals[1] * p[1]
-                        if np.isclose(val_z, final_z, atol=1e-3):
-                            opt_verts.append(p)
-                    if len(opt_verts) > 1:
-                        alt_x = [v[0] for v in opt_verts if not (np.isclose(v[0], sol[0]) and np.isclose(v[1], sol[1]))]
-                        alt_y = [v[1] for v in opt_verts if not (np.isclose(v[0], sol[0]) and np.isclose(v[1], sol[1]))]
-                        if alt_x:
-                            fig.add_trace(go.Scatter(
-                                x=alt_x, y=alt_y, mode="markers+text",
-                                text=[f"Alternative Optima ({ax}, {ay})" for ax, ay in zip(alt_x, alt_y)],
-                                textposition="top left",
-                                marker=dict(size=15, color="#fbbf24", symbol="diamond", line=dict(width=2, color="white")),
-                                name="Alternative Optimal Vertex"
-                            ))
+                fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
 
             fig.update_layout(
                 xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
@@ -666,7 +576,7 @@ else:
             st.plotly_chart(fig_3d, use_container_width=True)
 
     # ------------------------------------------
-    # 2. DUAL SIMPLEX METHOD
+    # 2. DUAL SIMPLEX METHOD (2D & 3D + RATIOS & LEGIBLE LABELS)
     # ------------------------------------------
     elif problem == "Dual Simplex Method":
         st.markdown("### ⚙️ Dual Simplex Problem Configuration")
@@ -684,6 +594,7 @@ else:
 
         st.markdown(f"### ⛓️ Constraints Setup:")
         d_A_rows, d_signs, d_b_vals = [], [], []
+        
         default_ds_a = [[-2.0, -3.0, -5.0], [-3.0, -1.0, -7.0]]
         default_ds_b = [-2.0, -3.0]
         
@@ -720,6 +631,89 @@ else:
         for iter_num, df, note in d_iterations:
             st.markdown(f"**Iteration {iter_num}** — {note}")
             st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("### 📈 Feasible Region & Optimal Solution Visualisation")
+        if int(d_num_vars) == 2:
+            max_rhs = max([abs(val) for val in d_b_vals]) if d_b_vals else 10.0
+            max_bound = max(max_rhs * 1.5, 8.0)
+            x_line = np.linspace(0, max_bound, 200)
+
+            fig_d = go.Figure()
+            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
+
+            vis_A, vis_signs, vis_b = [], [], []
+            for i in range(int(d_num_cons)):
+                vis_A.append(d_A_rows[i])
+                vis_signs.append(d_signs[i])
+                vis_b.append(d_b_vals[i])
+
+            valid_verts = get_2d_feasible_polygon(vis_A, vis_signs, vis_b, max_bound)
+            if len(valid_verts) >= 3:
+                poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
+                poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
+                fig_d.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(16, 185, 129, 0.25)", line=dict(color="#10b981", width=2.5), name="Feasible Region"))
+
+            for i in range(int(d_num_cons)):
+                a1, a2, b_i = vis_A[i][0], vis_A[i][1], vis_b[i]
+                col_c = colors[i % len(colors)]
+                if abs(a2) > 1e-6:
+                    y_vals = (b_i - a1 * x_line) / a2
+                    mask = (y_vals >= 0) & (y_vals <= max_bound)
+                    if np.any(mask):
+                        fig_d.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {vis_signs[i]} {b_i}", line=dict(color=col_c, width=3)))
+
+            if valid_verts:
+                vx, vy = zip(*valid_verts)
+                fig_d.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"CP{idx+1}: ({p[0]}, {p[1]})" for idx, p in enumerate(valid_verts)], textposition="top right", marker=dict(size=11, color="#ffffff", line=dict(width=2, color="#10b981")), name="Corner Points"))
+
+            if d_status == "Optimal":
+                fig_d.add_trace(go.Scatter(x=[d_sol[0]], y=[d_sol[1]], mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#f472b6", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
+
+            fig_d.update_layout(
+                xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
+                xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=14), tickfont=dict(color="#f8fafc", size=12)),
+                yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=14), tickfont=dict(color="#f8fafc", size=12)),
+                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560,
+                legend=dict(font=dict(color="#f8fafc", size=13), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+            )
+            st.plotly_chart(fig_d, use_container_width=True)
+            
+        elif int(d_num_vars) == 3:
+            st.markdown("#### 🧊 3D Dual Simplex Polytope & Optimal Vertex")
+            fig_3d_d = go.Figure()
+            max_3d_d = max([abs(val) for val in d_b_vals] + list(d_sol[:3]) + [5.0]) * 1.2
+            grid_rng_d = np.linspace(0, max_3d_d, 20)
+            
+            if d_status == "Optimal":
+                fig_3d_d.add_trace(go.Scatter3d(
+                    x=[d_sol[0]], y=[d_sol[1]], z=[d_sol[2]],
+                    mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f} ({d_sol[0]:.2f}, {d_sol[1]:.2f}, {d_sol[2]:.2f})"],
+                    marker=dict(size=11, color="#f472b6", symbol="diamond"), name="Optimal Vertex"
+                ))
+
+            colors_3d_d = ['Greens', 'Oranges', 'Purples', 'Blues']
+            for i in range(int(d_num_cons)):
+                a1, a2, a3, b_i = d_A_rows[i][0], d_A_rows[i][1], d_A_rows[i][2], d_b_vals[i]
+                if abs(a3) > 1e-6:
+                    X3d, Y3d = np.meshgrid(grid_rng_d, grid_rng_d)
+                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
+                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d_d), Z3d, np.nan)
+                    fig_3d_d.add_trace(go.Surface(
+                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d_d[i % len(colors_3d_d)], opacity=0.55, showscale=False,
+                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{d_signs[i]}{b_i}"
+                    ))
+
+            fig_3d_d.update_layout(
+                scene=dict(
+                    xaxis=dict(title="x₁ (Decision Var 1)", range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
+                    yaxis=dict(title="x₂ (Decision Var 2)", range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
+                    zaxis=dict(title="x₃ (Decision Var 3)", range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
+                ),
+                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600,
+                legend=dict(font=dict(color="#f8fafc", size=13), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+            )
+            st.plotly_chart(fig_3d_d, use_container_width=True)
 
     # ------------------------------------------
     # 3. BRANCH AND BOUND
@@ -767,19 +761,284 @@ else:
             st.graphviz_chart(dot_bb)
             st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
 
+            st.divider()
+            st.markdown("### 📐 Subproblem Geometry, Strip Deletion & LPP Construction Gallery")
+            max_intercept = 6.0
+            for b_val in bb_b:
+                max_intercept = max(max_intercept, float(b_val) * 1.3)
+            max_bound = max(max_intercept, 10.0)
+            x_line = np.linspace(0, max_bound, 300)
+            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#c084fc', '#ef4444', '#38bdf8']
+
+            for idx, nd in enumerate(nodes):
+                node_id = nd["id"]
+                n_status = nd["status"]
+                n_sol = nd["sol"]
+                n_z = nd["z"]
+                sub_A = nd["A"]
+                sub_signs = nd["signs"]
+                sub_b = nd["b"]
+
+                z_str = f"{n_z:.2f}" if n_status == "Optimal" else "N/A"
+                expander_label = f"📌 Subproblem {node_id} — Status: {n_status} | Z = {z_str}"
+
+                with st.expander(expander_label, expanded=(idx == 0)):
+                    col_g1, col_g2 = st.columns([3, 2])
+                    
+                    with col_g1:
+                        fig_sub = go.Figure()
+                        valid_verts = get_2d_feasible_polygon(sub_A, sub_signs, sub_b, max_bound)
+                        
+                        if len(valid_verts) >= 3:
+                            poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
+                            poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
+                            fig_sub.add_trace(go.Scatter(
+                                x=poly_x, y=poly_y, fill="toself", 
+                                fillcolor="rgba(56, 189, 248, 0.35)", 
+                                line=dict(color="#38bdf8", width=3), 
+                                name=f"Feasible Region {node_id}"
+                            ))
+
+                        for c_idx in range(len(sub_b)):
+                            a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
+                            s_sign = sub_signs[c_idx]
+                            c_col = colors[c_idx % len(colors)]
+                            
+                            if c_idx >= len(bb_A):
+                                c_label = f"Cut {c_idx}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                line_width = 3.5
+                                dash_style = "dash"
+                            else:
+                                c_label = f"C{c_idx+1}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                line_width = 3
+                                dash_style = "solid"
+
+                            if abs(a2) > 1e-6:
+                                y_vals = (b_val - a1 * x_line) / a2
+                                mask = (y_vals >= 0) & (y_vals <= max_bound)
+                                if np.any(mask):
+                                    fig_sub.add_trace(go.Scatter(
+                                        x=x_line[mask], y=y_vals[mask], mode="lines", 
+                                        name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)
+                                    ))
+                            elif abs(a1) > 1e-6:
+                                x_const = b_val / a1
+                                if 0 <= x_const <= max_bound:
+                                    fig_sub.add_trace(go.Scatter(
+                                        x=[x_const, x_const], y=[0, max_bound], mode="lines", 
+                                        name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)
+                                    ))
+
+                        if valid_verts:
+                            vx, vy = zip(*valid_verts)
+                            fig_sub.add_trace(go.Scatter(
+                                x=vx, y=vy, mode="markers+text", 
+                                text=[f"({p[0]}, {p[1]})" for p in valid_verts], 
+                                textposition="top right", 
+                                marker=dict(size=11, color="#f472b6", line=dict(width=2, color="white")), 
+                                name="Corner Points"
+                            ))
+
+                        if n_status == "Optimal":
+                            fig_sub.add_trace(go.Scatter(
+                                x=[n_sol[0]], y=[n_sol[1]], mode="markers+text", 
+                                text=[f"Z* ({n_sol[0]:.2f}, {n_sol[1]:.2f})"], 
+                                textposition="bottom right", 
+                                marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), 
+                                name="Optimal Point"
+                            ))
+
+                        fig_sub.update_layout(
+                            xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", 
+                            xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)), 
+                            yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)), 
+                            template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", 
+                            height=440, margin=dict(l=30, r=20, t=30, b=30),
+                            legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                        )
+                        st.plotly_chart(fig_sub, use_container_width=True, key=f"plot_{node_id}")
+
+                    with col_g2:
+                        st.markdown(f"#### 📋 LPP Formulation for `{node_id}`")
+                        st.markdown(f"**Objective Goal:** `{bb_obj}`")
+                        st.markdown(f"**Objective Function:** $Z = {bb_c_vals[0]}x_1 + {bb_c_vals[1]}x_2$")
+                        st.markdown("**Active Constraints & Strip Deletion Cuts:**")
+                        
+                        constraint_list_md = ""
+                        for c_idx in range(len(sub_b)):
+                            a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
+                            s_sign = sub_signs[c_idx]
+                            tag = " *(Branching Cut / Strip Spliced)*" if c_idx >= len(bb_A) else ""
+                            constraint_list_md += f"- ${a1}x_1 + {a2}x_2 {s_sign} {b_val}${tag}\n"
+                        st.markdown(constraint_list_md)
+                        st.markdown(f"- $x_1, x_2 \\ge 0$ (Non-negativity)")
+                        
+                        st.divider()
+                        if n_status == "Optimal":
+                            st.success(f"**Subproblem Status:** Optimal\n\n**Solution:** $x_1 = {n_sol[0]:.4f}, x_2 = {n_sol[1]:.4f}$\n\n**Objective Value:** $Z = {n_z:.4f}$")
+                        else:
+                            st.error(f"**Subproblem Status:** {n_status}\n\n*This branch is pruned/infeasible.*")
+
     # ------------------------------------------
-    # 4. GOMORY FRACTIONAL CUT
+    # 4. GOMORY FRACTIONAL CUT METHOD
     # ------------------------------------------
     elif problem == "Gomory Fractional Cut":
         st.markdown("### ✂️ Gomory Fractional Cutting Plane Studio")
-        st.markdown("Solve Integer Linear Programming (ILP) problems starting directly from relaxed optimal simplex table.")
-        st.info("Configure variables and constraints above to inspect cutting plane generation.")
+        st.markdown("Solve Integer Linear Programming (ILP) problems starting directly from the relaxed optimal simplex table and applying Gomory cutting planes.")
+
+        if "gomory_loaded" not in st.session_state:
+            st.session_state.gomory_loaded = False
+
+        cfg1, cfg2, cfg3 = st.columns(3)
+        with cfg1: g_obj = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="g_goal")
+        with cfg2: g_vars = st.number_input("Variables count (2 or 3)", min_value=2, max_value=3, value=2, step=1, key="g_v")
+        with cfg3: g_cons = st.number_input("Constraints count", min_value=1, max_value=10, value=2, step=1, key="g_c")
+
+        st.markdown(f"#### Objective Function Coefficients ($c_j$):")
+        gc_cols = st.columns(int(g_vars))
+        g_c_vals = []
+        for j in range(int(g_vars)):
+            with gc_cols[j]: g_c_vals.append(st.number_input(f"c{j+1}", value=2.0 if j==0 else 1.0, key=f"g_c_{j}"))
+
+        st.markdown(f"#### Constraints Setup:")
+        g_A, g_signs, g_b = [], [], []
+        for i in range(int(g_cons)):
+            st.markdown(f"**Constraint {i+1}:**")
+            gr_cols = st.columns(int(g_vars) + 2)
+            gr_a = []
+            for j in range(int(g_vars)):
+                with gr_cols[j]: gr_a.append(st.number_input(f"a_{i}_{j}", value=2.0 if (i==0 and j==0) else (1.0 if (i==0 and j==1) else (1.0 if i==1 and j==0 else 2.0)), key=f"g_a_{i}_{j}"))
+            with gr_cols[int(g_vars)]: g_signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"g_sign_{i}"))
+            with gr_cols[int(g_vars) + 1]: g_b.append(st.number_input(f"b_{i}", value=4.0, key=f"g_b_{i}"))
+            g_A.append(gr_a)
+
+        if st.button("🚀 Load Optimal Simplex Table & Apply Gomory Cut"):
+            st.session_state.gomory_loaded = True
+
+        if st.session_state.gomory_loaded:
+            st.divider()
+            st.markdown("### 📊 Step 1: Relaxed LP Optimal Simplex Tableau")
+            
+            status, sol, final_z, iterations, flags = solve_simplex_big_m(
+                g_obj, np.array(g_c_vals), np.array(g_A), g_signs, np.array(g_b)
+            )
+            
+            if status != "Optimal":
+                st.error(f"Relaxed LP returned status: {status}. Cannot proceed with Gomory cuts.")
+            else:
+                last_iter_num, last_df, last_note = iterations[-1]
+                st.info(f"**Relaxed Optimal Solution Found:** " + ", ".join([f"$x_{j+1} = {sol[j]:.4f}$" for j in range(int(g_vars))]) + f" | **Z* = {final_z:.4f}**")
+                st.markdown(f"**Optimal Simplex Tableau (Iteration {last_iter_num}):**")
+                st.dataframe(last_df, use_container_width=True, hide_index=True)
+
+                is_integer = all(np.isclose(val, round(val), atol=1e-4) for val in sol[:int(g_vars)])
+                
+                if is_integer:
+                    st.success("🎉 The relaxed LP optimal solution is **already integer**! No cutting planes needed.")
+                else:
+                    st.warning("⚠️ The optimal solution contains fractional values. Please select a basic variable row below to generate the Gomory Fractional Cut.")
+                    
+                    st.markdown("### ✂️ Step 2: Select Row for Gomory Fractional Cut")
+                    num_cons_val = len(g_b)
+                    
+                    row_options = []
+                    for r_idx in range(1, num_cons_val + 1):
+                        row_data = last_df.iloc[r_idx]
+                        xb = row_data["X_B"]
+                        b_val = row_data["b"]
+                        row_options.append(f"Row {r_idx}: Basic Variable {xb} = {b_val}")
+
+                    selected_row_str = st.selectbox("Choose Row for Fractional Cut", row_options, key="gomory_row_select")
+                    selected_row_idx = int(selected_row_str.split(":")[0].replace("Row ", "")) - 1
+                    
+                    var_names_list = list(last_df.columns)[3:-1]
+                    rhs_val = float(last_df.iloc[selected_row_idx + 1]["b"])
+                    basic_var_name = str(last_df.iloc[selected_row_idx + 1]["X_B"])
+                    
+                    row_coeffs = {}
+                    for v_name in var_names_list:
+                        row_coeffs[v_name] = float(last_df.iloc[selected_row_idx + 1][v_name])
+
+                    st.markdown(f"**Selected Equation ({basic_var_name} row):**")
+                    eq_terms = []
+                    for v_name, coef in row_coeffs.items():
+                        if abs(coef) > 1e-6:
+                            if not eq_terms:
+                                eq_terms.append(f"{coef:.4f}{v_name}" if not np.isclose(coef, 1.0) else f"{v_name}")
+                            else:
+                                sign_s = " + " if coef > 0 else " - "
+                                mag = abs(coef)
+                                eq_terms.append(f"{sign_s}{mag:.4f}{v_name}" if not np.isclose(mag, 1.0) else f"{sign_s}{v_name}")
+                    st.latex("".join(eq_terms) + f" = {rhs_val:.4f}")
+
+                    def frac_part(val):
+                        f = val - np.floor(val + 1e-9)
+                        return 0.0 if np.isclose(f, 0.0, atol=1e-6) or np.isclose(f, 1.0, atol=1e-6) else f
+
+                    f0 = frac_part(rhs_val)
+                    
+                    if f0 <= 1e-6:
+                        st.error(f"Selected row ({basic_var_name} = {rhs_val}) already has an integer RHS ($f_0 = 0$). Select a row with a fractional RHS.")
+                    else:
+                        tableau_cut_terms = []
+                        for v_name, coef in row_coeffs.items():
+                            fj = frac_part(coef)
+                            if fj > 1e-5:
+                                tableau_cut_terms.append(f"-{fj:.3f}{v_name}")
+                        
+                        st.markdown("### ✂️ Step 3: Generated Gomory Cutting Plane")
+                        st.latex(r"\text{Required Fractional Cut (Tableau Form): } " + " ".join(tableau_cut_terms) + f" + s_{{cut}} = -{f0:.3f}")
+
+                        cut_lhs_orig = np.zeros(int(g_vars))
+                        cut_rhs_orig = f0
+                        
+                        s_counter = 1
+                        slack_map = {}
+                        for i, s_sign in enumerate(g_signs):
+                            if s_sign == "<=":
+                                slack_map[f"s{s_counter}"] = (float(g_b[i]), -np.array(g_A[i], dtype=float))
+                                s_counter += 1
+
+                        for v_name, coef in row_coeffs.items():
+                            fj = frac_part(coef)
+                            if fj > 1e-5:
+                                if v_name.startswith("x"):
+                                    idx_x = int(v_name[1:]) - 1
+                                    cut_lhs_orig[idx_x] += fj
+                                elif v_name in slack_map:
+                                    const_term, x_vec = slack_map[v_name]
+                                    cut_rhs_orig -= fj * const_term
+                                    cut_lhs_orig += fj * x_vec
+
+                        orig_terms = [f"{cut_lhs_orig[j]:.3f}x_{j+1}" for j in range(int(g_vars)) if abs(cut_lhs_orig[j]) > 1e-5]
+                        st.latex(r"\text{Original Variable Space Cut: } " + " + ".join(orig_terms) + f" \\ge {cut_rhs_orig:.3f}")
+                        st.info("This cutting plane eliminates the fractional vertex without removing any integer feasible solutions.")
+
+                        new_A = np.vstack([g_A, cut_lhs_orig])
+                        new_signs = list(g_signs) + [">="]
+                        new_b = np.append(g_b, cut_rhs_orig)
+
+                        status_cut, sol_cut, final_z_cut, iters_cut, flags_cut = solve_simplex_big_m(
+                            g_obj, np.array(g_c_vals), new_A, new_signs, new_b
+                        )
+
+                        st.markdown("### 📊 Step 4: Tableau & Solution After Gomory Cut")
+                        if iters_cut:
+                            last_c_it, last_c_df, last_c_note = iters_cut[-1]
+                            st.markdown(f"**Tableau after applying Cut (Iteration {last_c_it}):** {last_c_note}")
+                            st.dataframe(last_c_df, use_container_width=True, hide_index=True)
+
+                        if status_cut == "Optimal":
+                            st.success(f"🏆 **Solution After Gomory Cut:** " + ", ".join([f"$x_{j+1} = {sol_cut[j]:.4f}$" for j in range(int(g_vars))]) + f" | **Z* = {final_z_cut:.4f}**")
+                        else:
+                            st.warning(f"Solution status after cut: {status_cut}")
 
     # ------------------------------------------
     # 5. NETWORK & TSP SOLVER
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
         st.markdown("### 🌐 Network & Traveling Salesman Problem (TSP) Studio")
+        
         prob_type = st.radio("Select Problem Type", ["Travelling Salesman Problem (TSP) [Start == End]", "Network Shortest Route Problem [Start != End]"], horizontal=True)
         st.divider()
 
@@ -787,10 +1046,16 @@ else:
             st.markdown("#### 🗺️ Fully Flexible TSP Distance Matrix Configuration")
             num_cities = int(st.number_input("Number of Cities", min_value=3, max_value=6, value=4, step=1))
             city_labels = [chr(65 + i) for i in range(num_cities)]
+            
             start_end_city = st.selectbox("Select Start & End City (TSP Closed Loop)", city_labels, index=0)
             
             default_matrix = np.full((num_cities, num_cities), 999.0)
-            preset_vals = [[0, 10, 15, 20], [5, 0, 9, 10], [6, 13, 0, 12], [8, 8, 9, 0]]
+            preset_vals = [
+                [0, 10, 15, 20],
+                [5, 0, 9, 10],
+                [6, 13, 0, 12],
+                [8, 8, 9, 0]
+            ]
             for r in range(min(num_cities, 4)):
                 for c in range(min(num_cities, 4)):
                     default_matrix[r, c] = preset_vals[r][c]
@@ -815,20 +1080,302 @@ else:
                         return memo_dp[state]
                     
                     min_cost = float('inf')
+                    best_next = -1
                     for j in S:
                         sub_cost, _ = compute_dp(j, S - {j})
                         total = dist_mat[i][j] + sub_cost
                         if total < min_cost:
                             min_cost = total
-                    memo_dp[state] = (min_cost, -1)
+                            best_next = j
+                    memo_dp[state] = (min_cost, best_next)
                     return memo_dp[state]
 
                 all_S = frozenset(other_cities)
                 opt_cost, _ = compute_dp(start_idx, all_S)
-                st.success(f"🏆 Optimal TSP Total Cost = {int(opt_cost)} units")
+                
+                optimal_states_set = set()
+                curr_i = start_idx
+                curr_S = all_S
+                while curr_S:
+                    _, nxt = memo_dp[(curr_i, curr_S)]
+                    optimal_states_set.add((curr_i, curr_S))
+                    curr_i = nxt
+                    curr_S = curr_S - {nxt}
+                optimal_states_set.add((curr_i, frozenset()))
+
+                dot_tsp = graphviz.Digraph(comment="TSP Unrolled DP State Tree")
+                dot_tsp.attr(bgcolor="transparent", rankdir="TB")
+                dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#1e293b', color='#38bdf8', penwidth='1.5')
+                dot_tsp.attr('edge', fontname='Helvetica', fontsize='10', color='#94a3b8')
+                
+                node_counter = [0]
+
+                def build_unrolled_tree(i, S, parent_id=None):
+                    state = (i, frozenset(S))
+                    cost_val, best_next_city = compute_dp(i, S)
+                    
+                    s_id = f"n_{node_counter[0]}"
+                    node_counter[0] += 1
+                    
+                    set_str = ", ".join(sorted([city_labels[j] for j in S])) if S else "Ø"
+                    if not S:
+                        label = f"g({city_labels[i]}, Ø)\n= c_{city_labels[i]}{city_labels[start_idx]} = {int(cost_val)}"
+                    else:
+                        calculations = []
+                        for j in S:
+                            sub_cost, _ = compute_dp(j, S - {j})
+                            calculations.append(f"{int(dist_mat[i][j])} + {int(sub_cost)}")
+                        calc_joined = ", ".join(calculations)
+                        if len(calculations) > 1:
+                            label = f"g({city_labels[i]}, {{{set_str}}})\n= min({calc_joined})\n= {int(cost_val)}"
+                        else:
+                            label = f"g({city_labels[i]}, {{{set_str}}})\n= {calc_joined}\n= {int(cost_val)}"
+
+                    is_opt_node = (state in optimal_states_set)
+                    node_fill = '#059669' if is_opt_node and state != (start_idx, all_S) else ('#2563eb' if state == (start_idx, all_S) else '#1e293b')
+                    node_border = '#ef4444' if is_opt_node else '#38bdf8'
+                    pen_w = '3.0' if is_opt_node else '1.5'
+                    
+                    dot_tsp.node(s_id, label, fillcolor=node_fill, color=node_border, penwidth=pen_w)
+                    
+                    if parent_id:
+                        parent_i, parent_S = parent_id['i'], parent_id['S']
+                        _, p_best_next = memo_dp[(parent_i, parent_S)]
+                        is_opt_edge = (state in optimal_states_set and parent_id['state'] in optimal_states_set and p_best_next == i)
+                        edge_color = '#ef4444' if is_opt_edge else '#38bdf8'
+                        edge_width = '3.0' if is_opt_edge else '1.0'
+                        edge_label = f"c_{city_labels[parent_i]}{city_labels[i]}={int(dist_mat[parent_i][i])}"
+                        dot_tsp.edge(parent_id['id'], s_id, label=edge_label, color=edge_color, penwidth=edge_width, fontcolor='#f8fafc' if is_opt_edge else '#94a3b8')
+
+                    for j in S:
+                        child_state_info = {'i': i, 'S': S, 'state': state, 'id': s_id}
+                        build_unrolled_tree(j, S - {j}, child_state_info)
+
+                build_unrolled_tree(start_idx, all_S)
+
+                st.markdown(f"### 🌳 Unrolled Bellman-Held-Karp State Tree (Start/End: {start_end_city})")
+                st.graphviz_chart(dot_tsp)
+                
+                tour_seq = [start_idx]
+                c_idx = start_idx
+                c_set = all_S
+                while c_set:
+                    _, nxt = memo_dp[(c_idx, c_set)]
+                    tour_seq.append(nxt)
+                    c_idx = nxt
+                    c_set = c_set - {nxt}
+                tour_seq.append(start_idx)
+                
+                tour_labels = [city_labels[idx] for idx in tour_seq]
+                st.success(f"🏆 **Optimal TSP Tour:** {' $\\rightarrow$ '.join(tour_labels)} | **Minimum Total Cost = {int(opt_cost)} units**")
+
         else:
             st.markdown("#### 🔄 Stagewise Network Shortest Route Studio")
-            st.info("Configure network nodes and edge weights for stagewise forward/backward shortest route optimization.")
+            net_method = st.selectbox("Select Stagewise Iteration Method", ["Backward Iteration Method (Sink -> Source)", "Forward Iteration Method (Source -> Sink)"])
+            
+            st.markdown("##### 1. Define Network Nodes & Stage Mapping")
+            num_net_nodes = int(st.number_input("Total Number of Nodes", min_value=3, max_value=10, value=7, step=1))
+            net_labels = [str(i+1) for i in range(num_net_nodes)]
+            
+            stage_cols = st.columns(min(num_net_nodes, 4))
+            node_stages = {}
+            for i, node in enumerate(net_labels):
+                col_idx = i % len(stage_cols)
+                with stage_cols[col_idx]:
+                    default_stage = 1 if i == 0 else (3 if i == num_net_nodes - 1 else 2)
+                    node_stages[node] = st.number_input(f"Node {node} Stage", min_value=1, max_value=5, value=default_stage, key=f"stage_node_{node}")
+
+            st.markdown("##### 2. Network Adjacency Matrix (Edge Weights)")
+            default_net = np.full((num_net_nodes, num_net_nodes), 999.0)
+            default_connections = [
+                (0,1,5), (0,2,14), (0,3,6),
+                (1,2,6), (1,4,12), (1,5,12),
+                (2,3,7), (2,4,2), (2,5,9),
+                (3,5,9),
+                (4,6,4),
+                (5,6,4)
+            ]
+            for u, v, w in default_connections:
+                if u < num_net_nodes and v < num_net_nodes:
+                    default_net[u, v] = w
+                    
+            net_df = pd.DataFrame(default_net, columns=net_labels, index=net_labels)
+            edited_net_df = st.data_editor(net_df, use_container_width=True)
+            
+            if st.button("Compute Stagewise Shortest Route & Tables"):
+                matrix_vals = edited_net_df.values.astype(float)
+                
+                if "Backward" in net_method:
+                    sink = num_net_nodes - 1
+                    f_cost = {sink: 0.0}
+                    policy = {sink: None}
+                    
+                    stages_sorted = sorted(list(set(node_stages.values())), reverse=True)
+                    computation_tables = {}
+                    
+                    for stg in stages_sorted[1:]:
+                        current_stage_nodes = [n for n, s in node_stages.items() if s == stg]
+                        stage_rows = []
+                        for node_str in current_stage_nodes:
+                            u_idx = net_labels.index(node_str)
+                            best_val = float('inf')
+                            best_nxt = None
+                            row_dict = {"State ($x_i$)": f"Node {node_str}"}
+                            
+                            for next_node_str in net_labels:
+                                v_idx = net_labels.index(next_node_str)
+                                wt = matrix_vals[u_idx, v_idx]
+                                if wt < 900 and v_idx in [net_labels.index(n) for n, s in node_stages.items() if s > stg]:
+                                    if v_idx in f_cost:
+                                        total_cost = wt + f_cost[v_idx]
+                                        row_dict[f"to {next_node_str}"] = f"{int(wt)} + {int(f_cost[v_idx])} = {int(total_cost)}"
+                                        if total_cost < best_val:
+                                            best_val = total_cost
+                                            best_nxt = next_node_str
+                                    else:
+                                        row_dict[f"to {next_node_str}"] = f"w={int(wt)} (Uncomputed)"
+                                else:
+                                    row_dict[f"to {next_node_str}"] = "—"
+                            
+                            if best_val != float('inf'):
+                                f_cost[u_idx] = best_val
+                                policy[u_idx] = best_nxt
+                                row_dict["Optimal $f(x)$"] = int(best_val)
+                                row_dict["Optimal Next"] = f"Node {best_nxt}"
+                            else:
+                                row_dict["Optimal $f(x)$"] = "—"
+                                row_dict["Optimal Next"] = "—"
+                                
+                            stage_rows.append(row_dict)
+                        computation_tables[stg] = pd.DataFrame(stage_rows)
+
+                    source_nodes = [n for n, s in node_stages.items() if s == min(node_stages.values())]
+                    source_rows = []
+                    for node_str in source_nodes:
+                        u_idx = net_labels.index(node_str)
+                        best_val = float('inf')
+                        best_nxt = None
+                        row_dict = {"State ($x_i$)": f"Node {node_str}"}
+                        for next_node_str in net_labels:
+                            v_idx = net_labels.index(next_node_str)
+                            wt = matrix_vals[u_idx, v_idx]
+                            if wt < 900 and v_idx in f_cost:
+                                total_cost = wt + f_cost[v_idx]
+                                row_dict[f"to {next_node_str}"] = f"{int(wt)} + {int(f_cost[v_idx])} = {int(total_cost)}"
+                                if total_cost < best_val:
+                                    best_val = total_cost
+                                    best_nxt = next_node_str
+                            else:
+                                row_dict[f"to {next_node_str}"] = "—"
+                        f_cost[u_idx] = best_val
+                        policy[u_idx] = best_nxt
+                        row_dict["Optimal $f(x)$"] = int(best_val)
+                        row_dict["Optimal Next"] = f"Node {best_nxt}"
+                        source_rows.append(row_dict)
+                    computation_tables[min(node_stages.values())] = pd.DataFrame(source_rows)
+
+                    curr_idx = 0
+                    shortest_path = [net_labels[curr_idx]]
+                    while curr_idx in policy and policy[curr_idx] is not None:
+                        nxt_node = policy[curr_idx]
+                        shortest_path.append(nxt_node)
+                        curr_idx = net_labels.index(nxt_node)
+
+                    st.markdown("### 📋 Step-by-Step Backward Iteration Tables")
+                    for stg_num in sorted(computation_tables.keys(), reverse=True):
+                        st.markdown(f"**Stage {stg_num} Calculations**")
+                        st.dataframe(computation_tables[stg_num], use_container_width=True)
+
+                    total_min_cost = f_cost.get(0, float('inf'))
+                else:
+                    source = 0
+                    f_cost = {source: 0.0}
+                    policy = {source: None}
+                    
+                    stages_sorted = sorted(list(set(node_stages.values())))
+                    computation_tables = {}
+                    
+                    for stg in stages_sorted[1:]:
+                        current_stage_nodes = [n for n, s in node_stages.items() if s == stg]
+                        prev_stage_indices = {net_labels.index(n) for n, s in node_stages.items() if s < stg}
+                        stage_rows = []
+                        for node_str in current_stage_nodes:
+                            v_idx = net_labels.index(node_str)
+                            best_val = float('inf')
+                            best_prev = None
+                            row_dict = {"State ($x_i$)": f"Node {node_str}"}
+                            
+                            for prev_node_str in net_labels:
+                                u_idx = net_labels.index(prev_node_str)
+                                wt = matrix_vals[u_idx, v_idx]
+                                if wt < 900 and u_idx in prev_stage_indices and u_idx in f_cost:
+                                    total_cost = f_cost[u_idx] + wt
+                                    row_dict[f"from {prev_node_str}"] = f"{int(f_cost[u_idx])} + {int(wt)} = {int(total_cost)}"
+                                    if total_cost < best_val:
+                                        best_val = total_cost
+                                        best_prev = prev_node_str
+                                else:
+                                    row_dict[f"from {prev_node_str}"] = "—"
+                            
+                            if best_val != float('inf'):
+                                f_cost[v_idx] = best_val
+                                policy[v_idx] = best_prev
+                                row_dict["Optimal $f(x)$"] = int(best_val)
+                                row_dict["Optimal Prev"] = f"Node {best_prev}"
+                            else:
+                                row_dict["Optimal $f(x)$"] = "—"
+                                row_dict["Optimal Prev"] = "—"
+                            stage_rows.append(row_dict)
+                        computation_tables[stg] = pd.DataFrame(stage_rows)
+
+                    curr_idx = num_net_nodes - 1
+                    shortest_path = [net_labels[curr_idx]]
+                    while curr_idx in policy and policy[curr_idx] is not None:
+                        prev_node = policy[curr_idx]
+                        shortest_path.insert(0, prev_node)
+                        curr_idx = net_labels.index(prev_node)
+
+                    st.markdown("### 📋 Step-by-Step Forward Iteration Tables")
+                    for stg_num in sorted(computation_tables.keys()):
+                        st.markdown(f"**Stage {stg_num} Calculations**")
+                        st.dataframe(computation_tables[stg_num], use_container_width=True)
+
+                    total_min_cost = f_cost.get(num_net_nodes - 1, float('inf'))
+
+                dot_net = graphviz.Digraph(comment="Stagewise Network Diagram")
+                dot_net.attr(bgcolor="transparent", rankdir="LR")
+                dot_net.attr('node', shape='circle', style='filled', fontcolor='white', fontname='Helvetica')
+                dot_net.attr('edge', fontname='Helvetica', fontsize='11')
+                
+                unique_stages = sorted(list(set(node_stages.values())))
+                for stg in unique_stages:
+                    with dot_net.subgraph() as subg:
+                        subg.attr(rank='same')
+                        nodes_in_stage = [n for n, s in node_stages.items() if s == stg]
+                        for n in nodes_in_stage:
+                            fill_color = '#10b981' if n == net_labels[0] or n == net_labels[-1] else '#2563eb'
+                            subg.node(n, label=f"Node {n}", fillcolor=fill_color)
+
+                opt_pairs = set((shortest_path[i], shortest_path[i+1]) for i in range(len(shortest_path)-1))
+                for r in range(num_net_nodes):
+                    for c in range(num_net_nodes):
+                        wt_val = matrix_vals[r, c]
+                        if wt_val < 900:
+                            u_name = net_labels[r]
+                            v_name = net_labels[c]
+                            is_opt = (u_name, v_name) in opt_pairs
+                            edge_col = '#10b981' if is_opt else '#38bdf8'
+                            pen_w = '3.5' if is_opt else '1.2'
+                            dot_net.edge(u_name, v_name, label=str(int(wt_val)), color=edge_col, penwidth=pen_w)
+
+                st.markdown("### 📊 Stagewise Network Diagram (Aligned Stages)")
+                st.graphviz_chart(dot_net)
+                
+                if total_min_cost < float('inf'):
+                    path_str = " -> ".join([f"Node {n}" for n in shortest_path])
+                    st.success(f"🌟 **Optimal Shortest Path ({net_method}):** {path_str} | **Total Minimum Distance = {int(total_min_cost)}**")
+                else:
+                    st.error("No valid complete path found connecting source to sink with current matrix weights.")
 
     # ------------------------------------------
     # 6. ADVANCED TSP STUDIO
