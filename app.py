@@ -118,11 +118,13 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     A = A.copy().astype(float)
     b = b.copy().astype(float)
     signs = list(signs)
+    
     for i in range(num_cons):
         if b[i] < 0:
             b[i] = -b[i]
             A[i] = -A[i]
-            if signs[i] == "<=": signs[i] = "="
+            if signs[i] == "<=": signs[i] = ">="
+            elif signs[i] == ">=": signs[i] = "<="
             elif signs[i] == "=": pass
 
     c_eff = c.copy().astype(float) if obj_type == "Maximize" else -c.copy().astype(float)
@@ -136,6 +138,13 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             col = np.zeros(num_cons); col[i] = 1.0
             extra_cols.append(col); var_names.append(f"s{s_count}"); cost_row.append(0.0)
             basis_indices.append(len(var_names) - 1); s_count += 1
+        elif s == ">=":
+            col_s = np.zeros(num_cons); col_s[i] = -1.0
+            extra_cols.append(col_s); var_names.append(f"s{s_count}"); cost_row.append(0.0)
+            s_count += 1
+            col_a = np.zeros(num_cons); col_a[i] = 1.0
+            extra_cols.append(col_a); var_names.append(f"A{a_count}"); cost_row.append(-M)
+            basis_indices.append(len(var_names) - 1); artificial_indices.append(len(var_names) - 1); a_count += 1
         elif s == "=":
             col_a = np.zeros(num_cons); col_a[i] = 1.0
             extra_cols.append(col_a); var_names.append(f"A{a_count}"); cost_row.append(-M)
@@ -271,7 +280,6 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
         ratio_display = ["—"] * len(var_names)
         for j in range(len(var_names)):
             if col_vals[j] < -1e-7:
-                # Ratio formula: | (Z_j - C_j) / a_rj | matching notebook convention[span_0](start_span)[span_0](end_span)[span_1](start_span)[span_1](end_span)
                 r_val = abs(cj_zj[j] / col_vals[j])
                 valid_ratios.append((r_val, j))
                 ratio_display[j] = round(float(r_val), 4)
@@ -522,9 +530,9 @@ else:
                 fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
 
             fig.update_layout(
-                xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
-                xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"),
-                yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"),
+                xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -539,6 +547,7 @@ else:
                 fig_3d.add_trace(go.Scatter3d(
                     x=[sol[0]], y=[sol[1]], z=[sol[2]],
                     mode="markers+text", text=[f"Optimal Z*={final_z:.2f} ({sol[0]:.2f}, {sol[1]:.2f}, {sol[2]:.2f})"],
+                    textfont=dict(color="#38bdf8", size=13),
                     marker=dict(size=10, color="#10b981", symbol="diamond"), name="Optimal Vertex"
                 ))
 
@@ -550,17 +559,17 @@ else:
                     Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
                     Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d), Z3d, np.nan)
                     fig_3d.add_trace(go.Surface(
-                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d[i % len(colors_3d)], opacity=0.5, showscale=False,
+                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d[i % len(colors_3d)], opacity=0.55, showscale=False,
                         name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{signs[i]}{b_i}"
                     ))
 
             fig_3d.update_layout(
                 scene=dict(
-                    xaxis_title="x₁", yaxis_title="x₂", zaxis_title="x₃",
-                    xaxis=dict(range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155"),
-                    yaxis=dict(range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155"),
-                    zaxis=dict(range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155"),
+                    xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                 ),
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
             st.plotly_chart(fig_3d, use_container_width=True)
@@ -661,9 +670,9 @@ else:
                 fig_d.add_trace(go.Scatter(x=[d_sol[0]], y=[d_sol[1]], mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#f472b6", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
 
             fig_d.update_layout(
-                xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
-                xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"),
-                yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"),
+                xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
             )
             st.plotly_chart(fig_d, use_container_width=True)
@@ -678,6 +687,7 @@ else:
                 fig_3d_d.add_trace(go.Scatter3d(
                     x=[d_sol[0]], y=[d_sol[1]], z=[d_sol[2]],
                     mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f} ({d_sol[0]:.2f}, {d_sol[1]:.2f}, {d_sol[2]:.2f})"],
+                    textfont=dict(color="#38bdf8", size=13),
                     marker=dict(size=11, color="#f472b6", symbol="diamond"), name="Optimal Vertex"
                 ))
 
@@ -695,11 +705,11 @@ else:
 
             fig_3d_d.update_layout(
                 scene=dict(
-                    xaxis_title="x₁", yaxis_title="x₂", zaxis_title="x₃",
-                    xaxis=dict(range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155"),
-                    yaxis=dict(range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155"),
-                    zaxis=dict(range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155"),
+                    xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                 ),
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
             st.plotly_chart(fig_3d_d, use_container_width=True)
@@ -838,9 +848,9 @@ else:
                             ))
 
                         fig_sub.update_layout(
-                            xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", 
-                            xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"), 
-                            yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155"), 
+                            xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                            yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                            legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                             template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", 
                             height=440, margin=dict(l=30, r=20, t=30, b=30)
                         )
