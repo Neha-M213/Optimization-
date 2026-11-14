@@ -798,7 +798,7 @@ else:
         st.divider()
         st.markdown("### 📈 Feasible Region & Optimal Solution Visualisation")
         if int(d_num_vars) == 2:
-            max_rhs = max([abs(val) for val in d_b_vals]) if b_vals else 10.0
+            max_rhs = max([abs(val) for val in d_b_vals]) if d_b_vals else 10.0
             max_bound = max(max_rhs * 1.5, 8.0)
             x_line = np.linspace(0, max_bound, 200)
 
