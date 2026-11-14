@@ -573,7 +573,8 @@ else:
                 legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
-            st.plotly_chart(fig_3d, use_container_width=True)
+            # Enable scrollZoom configuration for seamless zooming & orbiting together
+            st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
     # 2. DUAL SIMPLEX METHOD (2D & 3D + RATIOS)
@@ -714,7 +715,8 @@ else:
                 legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
-            st.plotly_chart(fig_3d_d, use_container_width=True)
+            # Enable scrollZoom configuration for seamless zooming & orbiting together
+            st.plotly_chart(fig_3d_d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
     # 3. BRANCH AND BOUND
