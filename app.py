@@ -560,6 +560,7 @@ else:
                     Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d), Z3d, np.nan)
                     fig_3d.add_trace(go.Surface(
                         x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d[i % len(colors_3d)], opacity=0.55, showscale=False,
+                        showlegend=True,
                         name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{signs[i]}{b_i}"
                     ))
 
@@ -700,6 +701,7 @@ else:
                     Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d_d), Z3d, np.nan)
                     fig_3d_d.add_trace(go.Surface(
                         x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d_d[i % len(colors_3d_d)], opacity=0.55, showscale=False,
+                        showlegend=True,
                         name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{d_signs[i]}{b_i}"
                     ))
 
