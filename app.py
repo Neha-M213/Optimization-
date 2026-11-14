@@ -389,6 +389,69 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
     return status, sol, final_z_val, iterations, list(special_flags)
 
 # ==========================================
+# HELPER: DYNAMIC BRANCH & BOUND ENGINE
+# ==========================================
+def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
+    nodes, queue = [], []
+    res = solve_simplex_big_m(obj_type, c, A_init, signs_init, b_init)
+    status, sol, z_val = res[0], res[1], res[2]
+    root_node = {
+        "id": "P0",
+        "label": f"P0 (Root)\nZ = {z_val:.2f}\n" + ", ".join([f"x{j+1}={sol[j]:.2f}" for j in range(len(c))]),
+        "status": status,
+        "z": z_val if status == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
+        "sol": sol, "A": A_init, "signs": signs_init, "b": b_init,
+        "fill": "#2563eb" if status == "Optimal" else "#059669"
+    }
+    nodes.append(root_node)
+    queue.append(root_node)
+    
+    tree_edges = []
+    node_counter = 1
+    
+    while queue and len(nodes) < 12:
+        curr = queue.pop(0)
+        if curr["status"] != "Optimal": continue
+        sol = curr["sol"]
+        if all(np.isclose(val, round(val), atol=1e-4) for val in sol): continue
+            
+        frac_idx = -1
+        for j, val in enumerate(sol):
+            if not np.isclose(val, round(val), atol=1e-4):
+                frac_idx = j
+                break
+        if frac_idx == -1: continue
+            
+        val = sol[frac_idx]
+        floor_v, ceil_v = int(np.floor(val)), int(np.ceil(val))
+        
+        for new_val, sign_str in [(floor_v, "<="), (ceil_v, ">=")]:
+            r_vec = np.zeros(len(c))
+            r_vec[frac_idx] = 1.0
+            new_A = np.vstack([curr["A"], r_vec])
+            new_signs = list(curr["signs"]) + [sign_str]
+            new_b = np.append(curr["b"], new_val)
+            
+            res_sub = solve_simplex_big_m(obj_type, c, new_A, new_signs, new_b)
+            st, sol_sub, z_sub = res_sub[0], res_sub[1], res_sub[2]
+            child_id = f"P{node_counter}"
+            node_counter += 1
+            
+            c_label = f"{child_id} (x{frac_idx+1} {sign_str} {new_val})\nZ = {z_sub:.2f}\n" + ", ".join([f"x{j+1}={sol_sub[j]:.2f}" for j in range(len(c))]) if st == "Optimal" else f"{child_id} (x{frac_idx+1} {sign_str} {new_val})\n{st}"
+            fill_col = '#2563eb' if st == "Optimal" else '#059669'
+            
+            node_obj = {
+                "id": child_id, "label": c_label, "status": st,
+                "z": z_sub if st == "Optimal" else (-1e9 if obj_type == "Maximize" else 1e9),
+                "sol": sol_sub, "A": new_A, "signs": new_signs, "b": new_b, "fill": fill_col
+            }
+            nodes.append(node_obj)
+            tree_edges.append((curr["id"], child_id, f"x{frac_idx+1} {sign_str} {new_val}"))
+            if st == "Optimal": queue.append(node_obj)
+            
+    return nodes, tree_edges
+
+# ==========================================
 # HELPER: 2D & 3D GEOMETRY GENERATORS
 # ==========================================
 def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
@@ -918,155 +981,148 @@ else:
             r_a = []
             for j in range(2):
                 with r_cols[j]: r_a.append(st.number_input(f"a_{i}_{j}", value=1.0 if (i==0 and j==0) else (3.0 if (i==0 and j==1) else (3.0 if (i==1 and j==0) else 1.0)), key=f"bb_a_{i}_{j}"))
-            with r_cols[2]: bb_signs.append(st.selectbox(f"sign_{i}", ["<=", "="], key=f"bb_sign_{i}"))
+            with r_cols[2]: bb_signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"bb_sign_{i}"))
             with r_cols[3]: bb_b.append(st.number_input(f"b_{i}", value=12.0 if i==0 else 10.0, key=f"bb_b_{i}"))
             bb_A.append(r_a)
 
         if st.button("🚀 Generate Branch & Bound Search Tree & Geometric Cuts"):
-            # Execute Branch & Bound search tree algorithm
-            c_arr = np.array(bb_c_vals)
-            base_A = [row[:] for row in bb_A]
-            base_signs = list(bb_signs)
-            base_b = list(bb_b)
-
-            # Node structure: id, A, signs, b, parent_id, branch_desc
-            node_queue = [{
-                "id": 0,
-                "A": base_A,
-                "signs": base_signs,
-                "b": base_b,
-                "parent": None,
-                "desc": "Root (LP Relaxation)"
-            }]
+            nodes, tree_edges = solve_branch_and_bound_tree(
+                bb_obj, np.array(bb_c_vals), np.array(bb_A), bb_signs, np.array(bb_b)
+            )
             
-            all_nodes = []
-            best_integer_z = -float('inf') if bb_obj == "Maximize" else float('inf')
-            best_integer_sol = None
-            node_counter = 1
-
-            while node_queue:
-                curr = node_queue.pop(0)
-                status, sol, z_val, _, _, _, _, _, _, _, _, _ = solve_simplex_big_m(
-                    bb_obj, c_arr, np.array(curr["A"]), curr["signs"], np.array(curr["b"])
-                )
-
-                node_info = {
-                    "id": curr["id"],
-                    "parent": curr["parent"],
-                    "desc": curr["desc"],
-                    "status": status,
-                    "sol": sol,
-                    "z": z_val if status == "Optimal" else None,
-                    "fathomed": False,
-                    "reason": ""
-                }
-
-                if status != "Optimal":
-                    node_info["fathomed"] = True
-                    node_info["reason"] = f"Infeasible / Unbounded"
-                else:
-                    # Check if integer
-                    is_int = all(abs(val - round(val)) < 1e-4 for val in sol[:2])
-                    if is_int:
-                        node_info["fathomed"] = True
-                        node_info["reason"] = "Integer Feasible"
-                        if bb_obj == "Maximize" and z_val > best_integer_z:
-                            best_integer_z = z_val
-                            best_integer_sol = sol[:2]
-                        elif bb_obj == "Minimize" and z_val < best_integer_z:
-                            best_integer_z = z_val
-                            best_integer_sol = sol[:2]
-                    else:
-                        # Check bounding
-                        if bb_obj == "Maximize" and z_val <= best_integer_z + 1e-5:
-                            node_info["fathomed"] = True
-                            node_info["reason"] = f"Bounded (Z={z_val:.2f} ≤ Best_Z)"
-                        elif bb_obj == "Minimize" and z_val >= best_integer_z - 1e-5:
-                            node_info["fathomed"] = True
-                            node_info["reason"] = f"Bounded (Z={z_val:.2f} ≥ Best_Z)"
-                        else:
-                            # Branch on first fractional variable
-                            frac_var_idx = -1
-                            for v_idx in range(2):
-                                if abs(sol[v_idx] - round(sol[v_idx])) >= 1e-4:
-                                    frac_var_idx = v_idx
-                                    break
-                            
-                            if frac_var_idx != -1:
-                                val = sol[frac_var_idx]
-                                floor_val = np.floor(val)
-                                ceil_val = np.ceil(val)
-
-                                # Left Child (x <= floor)
-                                left_A = [row[:] for row in curr["A"]] + [[1.0, 0.0] if frac_var_idx == 0 else [0.0, 1.0]]
-                                left_signs = list(curr["signs"]) + ["<="]
-                                left_b = list(curr["b"]) + [floor_val]
-
-                                left_node_id = node_counter
-                                node_counter += 1
-                                node_queue.append({
-                                    "id": left_node_id,
-                                    "A": left_A,
-                                    "signs": left_signs,
-                                    "b": left_b,
-                                    "id_path": curr["id"],
-                                    "parent": curr["id"],
-                                    "desc": f"x{frac_var_idx+1} ≤ {int(floor_val)}"
-                                })
-
-                                # Right Child (x >= ceil)
-                                right_A = [row[:] for row in curr["A"]] + [[1.0, 0.0] if frac_var_idx == 0 else [0.0, 1.0]]
-                                right_signs = list(curr["signs"]) + [">="]
-                                right_b = list(curr["b"]) + [ceil_val]
-
-                                right_node_id = node_counter
-                                node_counter += 1
-                                node_queue.append({
-                                    "id": right_node_id,
-                                    "A": right_A,
-                                    "signs": right_signs,
-                                    "b": right_b,
-                                    "parent": curr["id"],
-                                    "desc": f"x{frac_var_idx+1} ≥ {int(ceil_val)}"
-                                })
-                            else:
-                                node_info["fathomed"] = True
-                                node_info["reason"] = "Integer Feasible"
-
-                all_nodes.append(node_info)
-
-            st.success("✅ **Branch & Bound Search Tree Generated Successfully!**")
-            if best_integer_sol is not None:
-                st.info(f"🏆 **Optimal Integer Solution Found:** x₁ = {best_integer_sol[0]:.0f}, x₂ = {best_integer_sol[1]:.0f} | **Optimal Z* = {best_integer_z:.3f}**")
-            else:
-                st.warning("⚠️ No integer feasible solution found within exploration limits.")
-
-            # Render Graphviz Tree
             dot_bb = graphviz.Digraph(comment="Branch and Bound Tree")
             dot_bb.attr(bgcolor="transparent", rankdir="TB")
-            dot_bb.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#1e293b', color='#38bdf8', penwidth='1.5')
-            dot_bb.attr('edge', fontname='Helvetica', fontsize='10', color='#94a3b8')
-
-            for nd in all_nodes:
-                nid = f"node_{nd['id']}"
-                if nd["status"] == "Optimal":
-                    sol_txt = f"x=({nd['sol'][0]:.2f}, {nd['sol'][1]:.2f})"
-                    z_txt = f"Z = {nd['z']:.2f}"
-                else:
-                    sol_txt = nd["status"]
-                    z_txt = "—"
+            dot_bb.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica')
+            
+            for nd in nodes:
+                dot_bb.node(nd["id"], nd["label"], fillcolor=nd["fill"])
+            for u, v, lbl in tree_edges:
+                dot_bb.edge(u, v, label=lbl, color="#38bdf8", fontcolor="#f8fafc")
                 
-                fath_txt = f"Fathomed: {nd['reason']}" if nd["fathomed"] else "Active / Branching"
-                lbl = f"Subproblem #{nd['id']} ({nd['desc']})\n{sol_txt}\n{z_txt}\n[{fath_txt}]"
-                
-                fill_c = '#059669' if nd["reason"] == "Integer Feasible" else ('#b91c1c' if nd["fathomed"] else '#2563eb')
-                dot_bb.node(nid, label=lbl, fillcolor=fill_c)
-
-                if nd["parent"] is not None:
-                    dot_bb.edge(f"node_{nd['parent']}", nid, label=nd["desc"])
-
-            st.markdown("### 🌳 Branch & Bound Search Tree Diagram")
+            st.markdown("### 🌳 Branch and Bound Solution Tree")
             st.graphviz_chart(dot_bb)
+            st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
+
+            # --- SUBPROBLEM GEOMETRY & STRIP DELETION GALLERY ---
+            st.divider()
+            st.markdown("### 📐 Subproblem Geometry, Strip Deletion & LPP Construction Gallery")
+            st.caption("Each subproblem graph highlights the feasible region polygon, labeled corner points, active constraints, and branching cuts with high-contrast text.")
+
+            max_intercept = 6.0
+            for b_val in bb_b:
+                max_intercept = max(max_intercept, float(b_val) * 1.3)
+            max_bound = max(max_intercept, 10.0)
+            x_line = np.linspace(0, max_bound, 300)
+            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#c084fc', '#ef4444', '#38bdf8']
+
+            for idx, nd in enumerate(nodes):
+                node_id = nd["id"]
+                n_status = nd["status"]
+                n_sol = nd["sol"]
+                n_z = nd["z"]
+                sub_A = nd["A"]
+                sub_signs = nd["signs"]
+                sub_b = nd["b"]
+
+                z_str = f"{n_z:.2f}" if n_status == "Optimal" else "N/A"
+                expander_label = f"📌 Subproblem {node_id} — Status: {n_status} | Z = {z_str}"
+
+                with st.expander(expander_label, expanded=(idx == 0)):
+                    col_g1, col_g2 = st.columns([3, 2])
+                    
+                    with col_g1:
+                        fig_sub = go.Figure()
+                        valid_verts = get_2d_feasible_polygon(sub_A, sub_signs, sub_b, max_bound)
+                        
+                        if len(valid_verts) >= 3:
+                            poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
+                            poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
+                            fig_sub.add_trace(go.Scatter(
+                                x=poly_x, y=poly_y, fill="toself", 
+                                fillcolor="rgba(56, 189, 248, 0.35)", 
+                                line=dict(color="#38bdf8", width=3), 
+                                name=f"Feasible Region {node_id}"
+                            ))
+
+                        for c_idx in range(len(sub_b)):
+                            a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
+                            s_sign = sub_signs[c_idx]
+                            c_col = colors[c_idx % len(colors)]
+                            
+                            if c_idx >= len(bb_A):
+                                c_label = f"Cut {c_idx}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                line_width = 3.5
+                                dash_style = "dash"
+                            else:
+                                c_label = f"C{c_idx+1}: {a1}x₁ + {a2}x₂ {s_sign} {b_val}"
+                                line_width = 3
+                                dash_style = "solid"
+
+                            if abs(a2) > 1e-6:
+                                y_vals = (b_val - a1 * x_line) / a2
+                                mask = (y_vals >= 0) & (y_vals <= max_bound)
+                                if np.any(mask):
+                                    fig_sub.add_trace(go.Scatter(
+                                        x=x_line[mask], y=y_vals[mask], mode="lines", 
+                                        name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)
+                                    ))
+                            elif abs(a1) > 1e-6:
+                                x_const = b_val / a1
+                                if 0 <= x_const <= max_bound:
+                                    fig_sub.add_trace(go.Scatter(
+                                        x=[x_const, x_const], y=[0, max_bound], mode="lines", 
+                                        name=c_label, line=dict(color=c_col, width=line_width, dash=dash_style)
+                                    ))
+
+                        if valid_verts:
+                            vx, vy = zip(*valid_verts)
+                            fig_sub.add_trace(go.Scatter(
+                                x=vx, y=vy, mode="markers+text", 
+                                text=[f"({p[0]}, {p[1]})" for p in valid_verts], 
+                                textposition="top right", 
+                                marker=dict(size=11, color="#f472b6", line=dict(width=2, color="white")), 
+                                name="Corner Points"
+                            ))
+
+                        if n_status == "Optimal":
+                            fig_sub.add_trace(go.Scatter(
+                                x=[n_sol[0]], y=[n_sol[1]], mode="markers+text", 
+                                text=[f"Z* ({n_sol[0]:.2f}, {n_sol[1]:.2f})"], 
+                                textposition="bottom right", 
+                                marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), 
+                                name="Optimal Point"
+                            ))
+
+                        fig_sub.update_layout(
+                            xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", 
+                            xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")), 
+                            yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc"), tickfont=dict(color="#f8fafc")), 
+                            template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", 
+                            height=440, margin=dict(l=30, r=20, t=30, b=30),
+                            legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                        )
+                        st.plotly_chart(fig_sub, use_container_width=True, key=f"plot_{node_id}")
+
+                    with col_g2:
+                        st.markdown(f"#### 📋 LPP Formulation for `{node_id}`")
+                        st.markdown(f"**Objective Goal:** `{bb_obj}`")
+                        st.markdown(f"**Objective Function:** $Z = {bb_c_vals[0]}x_1 + {bb_c_vals[1]}x_2$")
+                        st.markdown("**Active Constraints & Strip Deletion Cuts:**")
+                        
+                        constraint_list_md = ""
+                        for c_idx in range(len(sub_b)):
+                            a1, a2, b_val = sub_A[c_idx][0], sub_A[c_idx][1], sub_b[c_idx]
+                            s_sign = sub_signs[c_idx]
+                            tag = " *(Branching Cut / Strip Spliced)*" if c_idx >= len(bb_A) else ""
+                            constraint_list_md += f"- ${a1}x_1 + {a2}x_2 {s_sign} {b_val}${tag}\n"
+                        st.markdown(constraint_list_md)
+                        st.markdown(f"- $x_1, x_2 \\ge 0$ (Non-negativity)")
+                        
+                        st.divider()
+                        if n_status == "Optimal":
+                            st.success(f"**Subproblem Status:** Optimal\n\n**Solution:** $x_1 = {n_sol[0]:.4f}, x_2 = {n_sol[1]:.4f}$\n\n**Objective Value:** $Z = {n_z:.4f}$")
+                        else:
+                            st.error(f"**Subproblem Status:** {n_status}\n\n*This branch is pruned/infeasible.*")
 
     # ------------------------------------------
     # 4. GOMORY FRACTIONAL CUT METHOD
