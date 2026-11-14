@@ -542,8 +542,8 @@ else:
             fig_3d = go.Figure()
             max_3d = max([abs(val) for val in b_vals] + list(sol[:3]) + [5.0]) * 1.2
             
-            # High-resolution grid (65 points) to eliminate staircase/sawtooth clipping artifacts
-            grid_rng = np.linspace(0, max_3d, 65)
+            # Optimized grid resolution for fast performance without lag
+            grid_rng = np.linspace(0, max_3d, 60)
             
             if status == "Optimal":
                 fig_3d.add_trace(go.Scatter3d(
@@ -568,7 +568,7 @@ else:
 
             fig_3d.update_layout(
                 scene=dict(
-                    dragmode='orbit',  # Enables free 3D orbit tumbling/rotation simultaneously with zoom
+                    dragmode='orbit',  # Enables unconstrained free 3D orbit tumbling & rotation simultaneously with zoom
                     xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
@@ -686,8 +686,8 @@ else:
             fig_3d_d = go.Figure()
             max_3d_d = max([abs(val) for val in d_b_vals] + list(d_sol[:3]) + [5.0]) * 1.2
             
-            # High-resolution grid (65 points) to eliminate staircase/sawtooth clipping artifacts
-            grid_rng_d = np.linspace(0, max_3d_d, 65)
+            # Optimized grid resolution for fast performance without lag
+            grid_rng_d = np.linspace(0, max_3d_d, 60)
             
             if d_status == "Optimal":
                 fig_3d_d.add_trace(go.Scatter3d(
@@ -712,7 +712,7 @@ else:
 
             fig_3d_d.update_layout(
                 scene=dict(
-                    dragmode='orbit',  # Enables free 3D orbit tumbling/rotation simultaneously with zoom
+                    dragmode='orbit',  # Enables unconstrained free 3D orbit tumbling & rotation simultaneously with zoom
                     xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
