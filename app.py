@@ -455,6 +455,74 @@ def get_3d_polytope_mesh(A_rows, signs, b_vals, max_bound):
     return valid_pts
 
 # ==========================================
+# HELPER: SMOOTH 3D CONSTRAINT PLANES (MESH3D)
+# ==========================================
+def add_smooth_3d_constraint_planes(fig, A_rows, signs, b_vals, max_3d):
+    vibrant_colors = ['#38bdf8', '#f43f5e', '#f59e0b', '#a855f7', '#10b981']
+    
+    for i in range(len(b_vals)):
+        a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
+        col = vibrant_colors[i % len(vibrant_colors)]
+        label = f"C{i+1}: {a1}x₁ + {a2}x₂ + {a3}x₃ {signs[i]} {b_i}"
+        
+        pts = []
+        box_vals = [0.0, max_3d]
+        for y_v in box_vals:
+            for z_v in box_vals:
+                if abs(a1) > 1e-7:
+                    x_v = (b_i - a2 * y_v - a3 * z_v) / a1
+                    if -1e-5 <= x_v <= max_3d + 1e-5: pts.append((max(0.0, min(max_3d, x_v)), y_v, z_v))
+        for x_v in box_vals:
+            for z_v in box_vals:
+                if abs(a2) > 1e-7:
+                    y_v = (b_i - a1 * x_v - a3 * z_v) / a2
+                    if -1e-5 <= y_v <= max_3d + 1e-5: pts.append((x_v, max(0.0, min(max_3d, y_v)), z_v))
+        for x_v in box_vals:
+            for y_v in box_vals:
+                if abs(a3) > 1e-7:
+                    z_v = (b_i - a1 * x_v - a2 * y_v) / a3
+                    if -1e-5 <= z_v <= max_3d + 1e-5: pts.append((x_v, y_v, max(0.0, min(max_3d, z_v))))
+                    
+        unique_pts = []
+        for p in pts:
+            if not any(np.allclose(p, up, atol=1e-3) for up in unique_pts):
+                unique_pts.append(p)
+                
+        if len(unique_pts) >= 3:
+            pts_arr = np.array(unique_pts)
+            centroid = np.mean(pts_arr, axis=0)
+            normal = np.array([a1, a2, a3], dtype=float)
+            norm_len = np.linalg.norm(normal)
+            if norm_len > 1e-7:
+                normal /= norm_len
+                u = pts_arr[0] - centroid
+                u -= np.dot(u, normal) * normal
+                if np.linalg.norm(u) > 1e-7:
+                    u /= np.linalg.norm(u)
+                    v = np.cross(normal, u)
+                    angles = [np.arctan2(np.dot(p - centroid, v), np.dot(p - centroid, u)) for p in pts_arr]
+                    sorted_idx = np.argsort(angles)
+                    pts_arr = pts_arr[sorted_idx]
+                    
+                    i_idx = [0] * (len(pts_arr) - 2)
+                    j_idx = list(range(1, len(pts_arr) - 1))
+                    k_idx = list(range(2, len(pts_arr)))
+                    
+                    fig.add_trace(go.Mesh3d(
+                        x=pts_arr[:, 0], y=pts_arr[:, 1], z=pts_arr[:, 2],
+                        i=i_idx, j=j_idx, k=k_idx,
+                        color=col, opacity=0.45, name=label, showlegend=True,
+                        lighting=dict(ambient=0.7, diffuse=0.8)
+                    ))
+                    
+                    border_pts = np.vstack([pts_arr, pts_arr[0]])
+                    fig.add_trace(go.Scatter3d(
+                        x=border_pts[:, 0], y=border_pts[:, 1], z=border_pts[:, 2],
+                        mode='lines', line=dict(color=col, width=5),
+                        showlegend=False, hoverinfo='skip'
+                    ))
+
+# ==========================================
 # VIEW 1: LANDING SCREEN
 # ==========================================
 if st.session_state.selected_problem is None:
@@ -590,11 +658,11 @@ else:
             st.plotly_chart(fig, use_container_width=True)
             
         elif int(num_vars) == 3:
-            st.markdown("#### 🧊 Smooth 3D Polytope Mesh & Optimal Solution Space")
+            st.markdown("#### 🧊 3D Feasible Region & Optimal Solution Space")
             fig_3d = go.Figure()
             max_3d = max([abs(val) for val in b_vals] + list(sol[:3]) + [5.0]) * 1.2
             
-            # 1. Smooth Solid Polytope Mesh
+            # Solid Feasible Region Polytope
             poly_verts = get_3d_polytope_mesh(A_rows, signs, b_vals, max_3d)
             if len(poly_verts) >= 4:
                 px = [p[0] for p in poly_verts]
@@ -603,33 +671,21 @@ else:
                 
                 fig_3d.add_trace(go.Mesh3d(
                     x=px, y=py, z=pz,
-                    alphahull=0, opacity=0.45,
-                    color='#38bdf8', name="Feasible Polytope Mesh",
+                    alphahull=0, opacity=0.35,
+                    color='#10b981', name="Feasible Region",
                     showlegend=True,
-                    lighting=dict(ambient=0.6, diffuse=0.8, specular=0.2)
+                    lighting=dict(ambient=0.7, diffuse=0.8)
                 ))
 
-            # 2. Re-add transparent constraint planes so equation names (C1, C2...) show in legend
-            grid_rng = np.linspace(0, max_3d, 30)
-            colors_3d = ['Blues', 'Reds', 'Greens', 'Purples', 'Oranges']
-            for i in range(int(num_cons)):
-                a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
-                if abs(a3) > 1e-6:
-                    X3d, Y3d = np.meshgrid(grid_rng, grid_rng)
-                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
-                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d), Z3d, np.nan)
-                    fig_3d.add_trace(go.Surface(
-                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d[i % len(colors_3d)], opacity=0.15, showscale=False,
-                        showlegend=True,
-                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{signs[i]}{b_i}"
-                    ))
+            # Razor-sharp, vibrant constraint planes with crisp borders
+            add_smooth_3d_constraint_planes(fig_3d, A_rows, signs, b_vals, max_3d)
             
             if status == "Optimal":
                 fig_3d.add_trace(go.Scatter3d(
                     x=[sol[0]], y=[sol[1]], z=[sol[2]],
                     mode="markers+text", text=[f"Optimal Z*={final_z:.2f} ({sol[0]:.2f}, {sol[1]:.2f}, {sol[2]:.2f})"],
-                    textfont=dict(color="#38bdf8", size=13),
-                    marker=dict(size=10, color="#10b981", symbol="diamond"), name="Optimal Vertex"
+                    textfont=dict(color="#ffffff", size=13),
+                    marker=dict(size=10, color="#10b981", symbol="diamond", line=dict(color="white", width=2)), name="Optimal Vertex"
                 ))
 
             fig_3d.update_layout(
@@ -639,7 +695,7 @@ else:
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                 ),
-                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
             st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
@@ -748,7 +804,7 @@ else:
             st.plotly_chart(fig_d, use_container_width=True)
             
         elif int(d_num_vars) == 3:
-            st.markdown("#### 🧊 Smooth 3D Dual Simplex Polytope Mesh")
+            st.markdown("#### 🧊 3D Dual Simplex Feasible Region")
             fig_3d_d = go.Figure()
             max_3d_d = max([abs(val) for val in d_b_vals] + list(d_sol[:3]) + [5.0]) * 1.2
             
@@ -766,32 +822,20 @@ else:
                 
                 fig_3d_d.add_trace(go.Mesh3d(
                     x=px, y=py, z=pz,
-                    alphahull=0, opacity=0.45,
-                    color='#10b981', name="Dual Feasible Polytope Mesh",
+                    alphahull=0, opacity=0.35,
+                    color='#10b981', name="Feasible Region",
                     showlegend=True,
-                    lighting=dict(ambient=0.6, diffuse=0.8, specular=0.2)
+                    lighting=dict(ambient=0.7, diffuse=0.8)
                 ))
 
-            grid_rng_d = np.linspace(0, max_3d_d, 30)
-            colors_3d_d = ['Greens', 'Oranges', 'Purples', 'Blues']
-            for i in range(int(d_num_cons)):
-                a1, a2, a3, b_i = vis_A[i][0], vis_A[i][1], vis_A[i][2], vis_b[i]
-                if abs(a3) > 1e-6:
-                    X3d, Y3d = np.meshgrid(grid_rng_d, grid_rng_d)
-                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
-                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d_d), Z3d, np.nan)
-                    fig_3d_d.add_trace(go.Surface(
-                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d_d[i % len(colors_3d_d)], opacity=0.15, showscale=False,
-                        showlegend=True,
-                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{vis_signs[i]}{b_i}"
-                    ))
+            add_smooth_3d_constraint_planes(fig_3d_d, vis_A, vis_signs, vis_b, max_3d_d)
             
             if d_status == "Optimal":
                 fig_3d_d.add_trace(go.Scatter3d(
                     x=[d_sol[0]], y=[d_sol[1]], z=[d_sol[2]],
                     mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f} ({d_sol[0]:.2f}, {d_sol[1]:.2f}, {d_sol[2]:.2f})"],
-                    textfont=dict(color="#38bdf8", size=13),
-                    marker=dict(size=11, color="#f472b6", symbol="diamond"), name="Optimal Vertex"
+                    textfont=dict(color="#ffffff", size=13),
+                    marker=dict(size=11, color="#f472b6", symbol="diamond", line=dict(color="white", width=2)), name="Optimal Vertex"
                 ))
 
             fig_3d_d.update_layout(
@@ -801,7 +845,7 @@ else:
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                 ),
-                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
             st.plotly_chart(fig_3d_d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
