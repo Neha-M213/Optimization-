@@ -419,18 +419,15 @@ def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
 # HELPER: 3D POLYTOPE MESH GENERATOR
 # ==========================================
 def get_3d_polytope_mesh(A_rows, signs, b_vals, max_bound):
-    # Generates exact convex hull vertices for 3D constraints bounded by x>=0, y>=0, z>=0
     candidates = [(0.0, 0.0, 0.0)]
     num_cons = len(b_vals)
     
-    # Intersections with axes
     for i in range(num_cons):
         a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
         if abs(a1) > 1e-7: candidates.append((b_i / a1, 0.0, 0.0))
         if abs(a2) > 1e-7: candidates.append((0.0, b_i / a2, 0.0))
         if abs(a3) > 1e-7: candidates.append((0.0, 0.0, b_i / a3))
         
-    # Intersections of 3 planes
     for i in range(num_cons):
         for j in range(i + 1, num_cons):
             for k in range(j + 1, num_cons):
@@ -597,7 +594,7 @@ else:
             fig_3d = go.Figure()
             max_3d = max([abs(val) for val in b_vals] + list(sol[:3]) + [5.0]) * 1.2
             
-            # Generate true smooth convex hull vertices for clean Mesh3d rendering
+            # 1. Smooth Solid Polytope Mesh
             poly_verts = get_3d_polytope_mesh(A_rows, signs, b_vals, max_3d)
             if len(poly_verts) >= 4:
                 px = [p[0] for p in poly_verts]
@@ -608,8 +605,24 @@ else:
                     x=px, y=py, z=pz,
                     alphahull=0, opacity=0.45,
                     color='#38bdf8', name="Feasible Polytope Mesh",
+                    showlegend=True,
                     lighting=dict(ambient=0.6, diffuse=0.8, specular=0.2)
                 ))
+
+            # 2. Re-add transparent constraint planes so equation names (C1, C2...) show in legend
+            grid_rng = np.linspace(0, max_3d, 30)
+            colors_3d = ['Blues', 'Reds', 'Greens', 'Purples', 'Oranges']
+            for i in range(int(num_cons)):
+                a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
+                if abs(a3) > 1e-6:
+                    X3d, Y3d = np.meshgrid(grid_rng, grid_rng)
+                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
+                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d), Z3d, np.nan)
+                    fig_3d.add_trace(go.Surface(
+                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d[i % len(colors_3d)], opacity=0.15, showscale=False,
+                        showlegend=True,
+                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{signs[i]}{b_i}"
+                    ))
             
             if status == "Optimal":
                 fig_3d.add_trace(go.Scatter3d(
@@ -621,7 +634,7 @@ else:
 
             fig_3d.update_layout(
                 scene=dict(
-                    dragmode='orbit',  # Enables unconstrained free 3D orbit tumbling & rotation simultaneously with zoom
+                    dragmode='orbit',
                     xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
@@ -755,8 +768,23 @@ else:
                     x=px, y=py, z=pz,
                     alphahull=0, opacity=0.45,
                     color='#10b981', name="Dual Feasible Polytope Mesh",
+                    showlegend=True,
                     lighting=dict(ambient=0.6, diffuse=0.8, specular=0.2)
                 ))
+
+            grid_rng_d = np.linspace(0, max_3d_d, 30)
+            colors_3d_d = ['Greens', 'Oranges', 'Purples', 'Blues']
+            for i in range(int(d_num_cons)):
+                a1, a2, a3, b_i = vis_A[i][0], vis_A[i][1], vis_A[i][2], vis_b[i]
+                if abs(a3) > 1e-6:
+                    X3d, Y3d = np.meshgrid(grid_rng_d, grid_rng_d)
+                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
+                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d_d), Z3d, np.nan)
+                    fig_3d_d.add_trace(go.Surface(
+                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d_d[i % len(colors_3d_d)], opacity=0.15, showscale=False,
+                        showlegend=True,
+                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{vis_signs[i]}{b_i}"
+                    ))
             
             if d_status == "Optimal":
                 fig_3d_d.add_trace(go.Scatter3d(
@@ -768,7 +796,7 @@ else:
 
             fig_3d_d.update_layout(
                 scene=dict(
-                    dragmode='orbit',  # Enables free 3D orbit tumbling/rotation simultaneously with zoom
+                    dragmode='orbit',
                     xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
@@ -1425,7 +1453,7 @@ else:
                         if wt_val < 900:
                             u_name = net_labels[r]
                             v_name = net_labels[c]
-                            is_opt = (u_name, v_name) in opt_pins if 'opt_pins' in locals() else (u_name, v_name) in opt_pairs
+                            is_opt = (u_name, v_name) in opt_pairs
                             edge_col = '#10b981' if is_opt else '#38bdf8'
                             pen_w = '3.5' if is_opt else '1.2'
                             dot_net.edge(u_name, v_name, label=str(int(wt_val)), color=edge_col, penwidth=pen_w)
