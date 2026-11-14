@@ -416,6 +416,48 @@ def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
     return valid_verts
 
 # ==========================================
+# HELPER: 3D POLYTOPE MESH GENERATOR
+# ==========================================
+def get_3d_polytope_mesh(A_rows, signs, b_vals, max_bound):
+    # Generates exact convex hull vertices for 3D constraints bounded by x>=0, y>=0, z>=0
+    candidates = [(0.0, 0.0, 0.0)]
+    num_cons = len(b_vals)
+    
+    # Intersections with axes
+    for i in range(num_cons):
+        a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
+        if abs(a1) > 1e-7: candidates.append((b_i / a1, 0.0, 0.0))
+        if abs(a2) > 1e-7: candidates.append((0.0, b_i / a2, 0.0))
+        if abs(a3) > 1e-7: candidates.append((0.0, 0.0, b_i / a3))
+        
+    # Intersections of 3 planes
+    for i in range(num_cons):
+        for j in range(i + 1, num_cons):
+            for k in range(j + 1, num_cons):
+                M_sys = np.array([A_rows[i][:3], A_rows[j][:3], A_rows[k][:3]], dtype=float)
+                rhs_sys = np.array([b_vals[i], b_vals[j], b_vals[k]], dtype=float)
+                if abs(np.linalg.det(M_sys)) > 1e-7:
+                    pt = np.linalg.solve(M_sys, rhs_sys)
+                    candidates.append((float(pt[0]), float(pt[1]), float(pt[2])))
+
+    valid_pts = []
+    for x, y, z in candidates:
+        if x < -1e-5 or y < -1e-5 or z < -1e-5 or x > max_bound + 1e-5 or y > max_bound + 1e-5 or z > max_bound + 1e-5: continue
+        ok = True
+        for i in range(num_cons):
+            val = A_rows[i][0] * x + A_rows[i][1] * y + A_rows[i][2] * z
+            s = signs[i]; b_i = b_vals[i]
+            if s == "<=" and val > b_i + 1e-3: ok = False; break
+            elif s == ">=" and val < b_i - 1e-3: ok = False; break
+            elif s == "=" and not np.isclose(val, b_i, atol=1e-2): ok = False; break
+        if ok:
+            pt_clean = (round(max(0.0, x), 3), round(max(0.0, y), 3), round(max(0.0, z), 3))
+            if not any(np.isclose(pt_clean[0], p[0], atol=1e-2) and np.isclose(pt_clean[1], p[1], atol=1e-2) and np.isclose(pt_clean[2], p[2], atol=1e-2) for p in valid_pts):
+                valid_pts.append(pt_clean)
+                
+    return valid_pts
+
+# ==========================================
 # VIEW 1: LANDING SCREEN
 # ==========================================
 if st.session_state.selected_problem is None:
@@ -498,7 +540,7 @@ else:
             st.dataframe(df, use_container_width=True, hide_index=True)
 
         st.divider()
-        st.markdown("### 📈 Feasible Region & Optimal Solution Visualisation")
+        st.markdown("### 📈 Feasible Region & Objective Function Visualisation")
         if int(num_vars) == 2:
             max_rhs = max([abs(val) for val in b_vals]) if b_vals else 10.0
             max_bound = max(max_rhs * 1.4, 8.0)
@@ -522,6 +564,19 @@ else:
                     if np.any(mask):
                         fig.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}", line=dict(color=col_c, width=3)))
 
+            # Interactive Objective Function Slider Control
+            st.markdown("#### 🎛️ Objective Function Level Curve Slider")
+            z_min = 0.0
+            z_max = float(final_z * 1.6) if status == "Optimal" and final_z > 0 else 50.0
+            slider_z = st.slider("Slide Objective Level Z ($c_1 x_1 + c_2 x_2 = Z$)", min_value=float(z_min), max_value=float(z_max), value=float(final_z) if status == "Optimal" else 10.0, step=0.5)
+
+            c1, c2 = c_vals[0], c_vals[1]
+            if abs(c2) > 1e-6:
+                obj_y = (slider_z - c1 * x_line) / c2
+                mask_obj = (obj_y >= 0) & (obj_y <= max_bound)
+                if np.any(mask_obj):
+                    fig.add_trace(go.Scatter(x=x_line[mask_obj], y=obj_y[mask_obj], mode="lines", name=f"Objective: {c1}x₁ + {c2}x₂ = {slider_z:.1f}", line=dict(color="#f43f5e", width=4, dash="dash")))
+
             if valid_verts:
                 vx, vy = zip(*valid_verts)
                 fig.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"CP{idx+1}: ({p[0]}, {p[1]})" for idx, p in enumerate(valid_verts)], textposition="top right", marker=dict(size=11, color="#ffffff", line=dict(width=2, color="#38bdf8")), name="Corner Points"))
@@ -538,12 +593,23 @@ else:
             st.plotly_chart(fig, use_container_width=True)
             
         elif int(num_vars) == 3:
-            st.markdown("#### 🧊 3D Polytope & Optimal Solution Space")
+            st.markdown("#### 🧊 Smooth 3D Polytope Mesh & Optimal Solution Space")
             fig_3d = go.Figure()
             max_3d = max([abs(val) for val in b_vals] + list(sol[:3]) + [5.0]) * 1.2
             
-            # Optimized grid resolution for fast performance without lag
-            grid_rng = np.linspace(0, max_3d, 60)
+            # Generate true smooth convex hull vertices for clean Mesh3d rendering
+            poly_verts = get_3d_polytope_mesh(A_rows, signs, b_vals, max_3d)
+            if len(poly_verts) >= 4:
+                px = [p[0] for p in poly_verts]
+                py = [p[1] for p in poly_verts]
+                pz = [p[2] for p in poly_verts]
+                
+                fig_3d.add_trace(go.Mesh3d(
+                    x=px, y=py, z=pz,
+                    alphahull=0, opacity=0.45,
+                    color='#38bdf8', name="Feasible Polytope Mesh",
+                    lighting=dict(ambient=0.6, diffuse=0.8, specular=0.2)
+                ))
             
             if status == "Optimal":
                 fig_3d.add_trace(go.Scatter3d(
@@ -552,19 +618,6 @@ else:
                     textfont=dict(color="#38bdf8", size=13),
                     marker=dict(size=10, color="#10b981", symbol="diamond"), name="Optimal Vertex"
                 ))
-
-            colors_3d = ['Blues', 'Reds', 'Greens', 'Purples', 'Oranges']
-            for i in range(int(num_cons)):
-                a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
-                if abs(a3) > 1e-6:
-                    X3d, Y3d = np.meshgrid(grid_rng, grid_rng)
-                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
-                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d), Z3d, np.nan)
-                    fig_3d.add_trace(go.Surface(
-                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d[i % len(colors_3d)], opacity=0.55, showscale=False,
-                        showlegend=True,
-                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{signs[i]}{b_i}"
-                    ))
 
             fig_3d.update_layout(
                 scene=dict(
@@ -682,12 +735,28 @@ else:
             st.plotly_chart(fig_d, use_container_width=True)
             
         elif int(d_num_vars) == 3:
-            st.markdown("#### 🧊 3D Dual Simplex Polytope & Optimal Vertex")
+            st.markdown("#### 🧊 Smooth 3D Dual Simplex Polytope Mesh")
             fig_3d_d = go.Figure()
             max_3d_d = max([abs(val) for val in d_b_vals] + list(d_sol[:3]) + [5.0]) * 1.2
             
-            # Optimized grid resolution for fast performance without lag
-            grid_rng_d = np.linspace(0, max_3d_d, 60)
+            vis_A, vis_signs, vis_b = [], [], []
+            for i in range(int(d_num_cons)):
+                vis_A.append(d_A_rows[i])
+                vis_signs.append(d_signs[i])
+                vis_b.append(d_b_vals[i])
+
+            poly_verts_d = get_3d_polytope_mesh(vis_A, vis_signs, vis_b, max_3d_d)
+            if len(poly_verts_d) >= 4:
+                px = [p[0] for p in poly_verts_d]
+                py = [p[1] for p in poly_verts_d]
+                pz = [p[2] for p in poly_verts_d]
+                
+                fig_3d_d.add_trace(go.Mesh3d(
+                    x=px, y=py, z=pz,
+                    alphahull=0, opacity=0.45,
+                    color='#10b981', name="Dual Feasible Polytope Mesh",
+                    lighting=dict(ambient=0.6, diffuse=0.8, specular=0.2)
+                ))
             
             if d_status == "Optimal":
                 fig_3d_d.add_trace(go.Scatter3d(
@@ -697,22 +766,9 @@ else:
                     marker=dict(size=11, color="#f472b6", symbol="diamond"), name="Optimal Vertex"
                 ))
 
-            colors_3d_d = ['Greens', 'Oranges', 'Purples', 'Blues']
-            for i in range(int(d_num_cons)):
-                a1, a2, a3, b_i = d_A_rows[i][0], d_A_rows[i][1], d_A_rows[i][2], d_b_vals[i]
-                if abs(a3) > 1e-6:
-                    X3d, Y3d = np.meshgrid(grid_rng_d, grid_rng_d)
-                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
-                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d_d), Z3d, np.nan)
-                    fig_3d_d.add_trace(go.Surface(
-                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d_d[i % len(colors_3d_d)], opacity=0.55, showscale=False,
-                        showlegend=True,
-                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{d_signs[i]}{b_i}"
-                    ))
-
             fig_3d_d.update_layout(
                 scene=dict(
-                    dragmode='orbit',  # Enables unconstrained free 3D orbit tumbling & rotation simultaneously with zoom
+                    dragmode='orbit',  # Enables free 3D orbit tumbling/rotation simultaneously with zoom
                     xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
@@ -1369,7 +1425,7 @@ else:
                         if wt_val < 900:
                             u_name = net_labels[r]
                             v_name = net_labels[c]
-                            is_opt = (u_name, v_name) in opt_pairs
+                            is_opt = (u_name, v_name) in opt_pins if 'opt_pins' in locals() else (u_name, v_name) in opt_pairs
                             edge_col = '#10b981' if is_opt else '#38bdf8'
                             pen_w = '3.5' if is_opt else '1.2'
                             dot_net.edge(u_name, v_name, label=str(int(wt_val)), color=edge_col, penwidth=pen_w)
