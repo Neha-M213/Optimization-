@@ -118,12 +118,14 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     A = A.copy().astype(float)
     b = b.copy().astype(float)
     signs = list(signs)
+    
     for i in range(num_cons):
         if b[i] < 0:
             b[i] = -b[i]
             A[i] = -A[i]
             if signs[i] == "<=": signs[i] = ">="
             elif signs[i] == ">=": signs[i] = "<="
+            elif signs[i] == "=": pass
 
     c_eff = c.copy().astype(float) if obj_type == "Maximize" else -c.copy().astype(float)
     var_names = [f"x{j+1}" for j in range(num_vars)]
@@ -138,7 +140,8 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             basis_indices.append(len(var_names) - 1); s_count += 1
         elif s == ">=":
             col_s = np.zeros(num_cons); col_s[i] = -1.0
-            extra_cols.append(col_s); var_names.append(f"s{s_count}"); cost_row.append(0.0); s_count += 1
+            extra_cols.append(col_s); var_names.append(f"s{s_count}"); cost_row.append(0.0)
+            s_count += 1
             col_a = np.zeros(num_cons); col_a[i] = 1.0
             extra_cols.append(col_a); var_names.append(f"A{a_count}"); cost_row.append(-M)
             basis_indices.append(len(var_names) - 1); artificial_indices.append(len(var_names) - 1); a_count += 1
@@ -184,10 +187,6 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             else:
                 ratio_display[i] = "—"
                 
-        if not valid_ratios:
-            status = "Unbounded"
-            break
-            
         leaving_row = min(valid_ratios, key=lambda x: x[0])[1]
         
         df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=ratio_display)
@@ -417,6 +416,113 @@ def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
     return valid_verts
 
 # ==========================================
+# HELPER: 3D POLYTOPE MESH GENERATOR
+# ==========================================
+def get_3d_polytope_mesh(A_rows, signs, b_vals, max_bound):
+    candidates = [(0.0, 0.0, 0.0)]
+    num_cons = len(b_vals)
+    
+    for i in range(num_cons):
+        a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
+        if abs(a1) > 1e-7: candidates.append((b_i / a1, 0.0, 0.0))
+        if abs(a2) > 1e-7: candidates.append((0.0, b_i / a2, 0.0))
+        if abs(a3) > 1e-7: candidates.append((0.0, 0.0, b_i / a3))
+        
+    for i in range(num_cons):
+        for j in range(i + 1, num_cons):
+            for k in range(j + 1, num_cons):
+                M_sys = np.array([A_rows[i][:3], A_rows[j][:3], A_rows[k][:3]], dtype=float)
+                rhs_sys = np.array([b_vals[i], b_vals[j], b_vals[k]], dtype=float)
+                if abs(np.linalg.det(M_sys)) > 1e-7:
+                    pt = np.linalg.solve(M_sys, rhs_sys)
+                    candidates.append((float(pt[0]), float(pt[1]), float(pt[2])))
+
+    valid_pts = []
+    for x, y, z in candidates:
+        if x < -1e-5 or y < -1e-5 or z < -1e-5 or x > max_bound + 1e-5 or y > max_bound + 1e-5 or z > max_bound + 1e-5: continue
+        ok = True
+        for i in range(num_cons):
+            val = A_rows[i][0] * x + A_rows[i][1] * y + A_rows[i][2] * z
+            s = signs[i]; b_i = b_vals[i]
+            if s == "<=" and val > b_i + 1e-3: ok = False; break
+            elif s == ">=" and val < b_i - 1e-3: ok = False; break
+            elif s == "=" and not np.isclose(val, b_i, atol=1e-2): ok = False; break
+        if ok:
+            pt_clean = (round(max(0.0, x), 3), round(max(0.0, y), 3), round(max(0.0, z), 3))
+            if not any(np.isclose(pt_clean[0], p[0], atol=1e-2) and np.isclose(pt_clean[1], p[1], atol=1e-2) and np.isclose(pt_clean[2], p[2], atol=1e-2) for p in valid_pts):
+                valid_pts.append(pt_clean)
+                
+    return valid_pts
+
+# ==========================================
+# HELPER: SMOOTH 3D CONSTRAINT PLANES (MESH3D)
+# ==========================================
+def add_smooth_3d_constraint_planes(fig, A_rows, signs, b_vals, max_3d):
+    vibrant_colors = ['#38bdf8', '#f43f5e', '#f59e0b', '#a855f7', '#10b981']
+    
+    for i in range(len(b_vals)):
+        a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
+        col = vibrant_colors[i % len(vibrant_colors)]
+        label = f"C{i+1}: {a1}x₁ + {a2}x₂ + {a3}x₃ {signs[i]} {b_i}"
+        
+        pts = []
+        box_vals = [0.0, max_3d]
+        for y_v in box_vals:
+            for z_v in box_vals:
+                if abs(a1) > 1e-7:
+                    x_v = (b_i - a2 * y_v - a3 * z_v) / a1
+                    if -1e-5 <= x_v <= max_3d + 1e-5: pts.append((max(0.0, min(max_3d, x_v)), y_v, z_v))
+        for x_v in box_vals:
+            for z_v in box_vals:
+                if abs(a2) > 1e-7:
+                    y_v = (b_i - a1 * x_v - a3 * z_v) / a2
+                    if -1e-5 <= y_v <= max_3d + 1e-5: pts.append((x_v, max(0.0, min(max_3d, y_v)), z_v))
+        for x_v in box_vals:
+            for y_v in box_vals:
+                if abs(a3) > 1e-7:
+                    z_v = (b_i - a1 * x_v - a2 * y_v) / a3
+                    if -1e-5 <= z_v <= max_3d + 1e-5: pts.append((x_v, y_v, max(0.0, min(max_3d, z_v))))
+                    
+        unique_pts = []
+        for p in pts:
+            if not any(np.allclose(p, up, atol=1e-3) for up in unique_pts):
+                unique_pts.append(p)
+                
+        if len(unique_pts) >= 3:
+            pts_arr = np.array(unique_pts)
+            centroid = np.mean(pts_arr, axis=0)
+            normal = np.array([a1, a2, a3], dtype=float)
+            norm_len = np.linalg.norm(normal)
+            if norm_len > 1e-7:
+                normal /= norm_len
+                u = pts_arr[0] - centroid
+                u -= np.dot(u, normal) * normal
+                if np.linalg.norm(u) > 1e-7:
+                    u /= np.linalg.norm(u)
+                    v = np.cross(normal, u)
+                    angles = [np.arctan2(np.dot(p - centroid, v), np.dot(p - centroid, u)) for p in pts_arr]
+                    sorted_idx = np.argsort(angles)
+                    pts_arr = pts_arr[sorted_idx]
+                    
+                    i_idx = [0] * (len(pts_arr) - 2)
+                    j_idx = list(range(1, len(pts_arr) - 1))
+                    k_idx = list(range(2, len(pts_arr)))
+                    
+                    fig.add_trace(go.Mesh3d(
+                        x=pts_arr[:, 0], y=pts_arr[:, 1], z=pts_arr[:, 2],
+                        i=i_idx, j=j_idx, k=k_idx,
+                        color=col, opacity=0.45, name=label, showlegend=True,
+                        lighting=dict(ambient=0.7, diffuse=0.8)
+                    ))
+                    
+                    border_pts = np.vstack([pts_arr, pts_arr[0]])
+                    fig.add_trace(go.Scatter3d(
+                        x=border_pts[:, 0], y=border_pts[:, 1], z=border_pts[:, 2],
+                        mode='lines', line=dict(color=col, width=5),
+                        showlegend=False, hoverinfo='skip'
+                    ))
+
+# ==========================================
 # VIEW 1: LANDING SCREEN
 # ==========================================
 if st.session_state.selected_problem is None:
@@ -450,7 +556,7 @@ else:
     st.divider()
 
     # ------------------------------------------
-    # 1. SIMPLEX METHOD (2D & 3D SUPPORT WITH LEGIBLE LABELS)
+    # 1. SIMPLEX METHOD (2D & 3D SUPPORT)
     # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
@@ -465,7 +571,7 @@ else:
         for j in range(int(num_vars)):
             with obj_cols[j]: c_vals.append(st.number_input(f"c{j+1}", value=1.0, key=f"c_{j}"))
 
-        st.markdown(f"### ⛓️ Constraints Setup:")
+        st.markdown(f"### ⛓️ Constraints Setup (≤ and =):")
         A_rows, signs, b_vals = [], [], []
         for i in range(int(num_cons)):
             st.markdown(f"**Constraint {i+1}:**")
@@ -473,7 +579,7 @@ else:
             row_a = []
             for j in range(int(num_vars)):
                 with row_cols[j]: row_a.append(st.number_input(f"a_{i}_{j}", value=1.0, key=f"a_{i}_{j}"))
-            with row_cols[int(num_vars)]: signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"sign_{i}"))
+            with row_cols[int(num_vars)]: signs.append(st.selectbox(f"sign_{i}", ["<=", "="], key=f"sign_{i}"))
             with row_cols[int(num_vars) + 1]: b_vals.append(st.number_input(f"b_{i}", value=10.0, key=f"b_{i}"))
             A_rows.append(row_a)
 
@@ -499,7 +605,7 @@ else:
             st.dataframe(df, use_container_width=True, hide_index=True)
 
         st.divider()
-        st.markdown("### 📈 Feasible Region & Optimal Solution Visualisation")
+        st.markdown("### 📈 Feasible Region & Objective Function Visualisation")
         if int(num_vars) == 2:
             max_rhs = max([abs(val) for val in b_vals]) if b_vals else 10.0
             max_bound = max(max_rhs * 1.4, 8.0)
@@ -523,6 +629,19 @@ else:
                     if np.any(mask):
                         fig.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}", line=dict(color=col_c, width=3)))
 
+            # Interactive Objective Function Slider Control
+            st.markdown("#### 🎛️ Objective Function Level Curve Slider")
+            z_min = 0.0
+            z_max = float(final_z * 1.6) if status == "Optimal" and final_z > 0 else 50.0
+            slider_z = st.slider("Slide Objective Level Z ($c_1 x_1 + c_2 x_2 = Z$)", min_value=float(z_min), max_value=float(z_max), value=float(final_z) if status == "Optimal" else 10.0, step=0.5)
+
+            c1, c2 = c_vals[0], c_vals[1]
+            if abs(c2) > 1e-6:
+                obj_y = (slider_z - c1 * x_line) / c2
+                mask_obj = (obj_y >= 0) & (obj_y <= max_bound)
+                if np.any(mask_obj):
+                    fig.add_trace(go.Scatter(x=x_line[mask_obj], y=obj_y[mask_obj], mode="lines", name=f"Objective: {c1}x₁ + {c2}x₂ = {slider_z:.1f}", line=dict(color="#f43f5e", width=4, dash="dash")))
+
             if valid_verts:
                 vx, vy = zip(*valid_verts)
                 fig.add_trace(go.Scatter(x=vx, y=vy, mode="markers+text", text=[f"CP{idx+1}: ({p[0]}, {p[1]})" for idx, p in enumerate(valid_verts)], textposition="top right", marker=dict(size=11, color="#ffffff", line=dict(width=2, color="#38bdf8")), name="Corner Points"))
@@ -531,52 +650,58 @@ else:
                 fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
 
             fig.update_layout(
-                xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
-                xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=14), tickfont=dict(color="#f8fafc", size=12)),
-                yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=14), tickfont=dict(color="#f8fafc", size=12)),
-                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560,
-                legend=dict(font=dict(color="#f8fafc", size=13), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
+                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
             )
             st.plotly_chart(fig, use_container_width=True)
             
         elif int(num_vars) == 3:
-            st.markdown("#### 🧊 3D Polytope & Optimal Solution Space")
+            st.markdown("#### 🧊 3D Feasible Region & Optimal Solution Space")
             fig_3d = go.Figure()
             max_3d = max([abs(val) for val in b_vals] + list(sol[:3]) + [5.0]) * 1.2
-            grid_rng = np.linspace(0, max_3d, 20)
+            
+            # Solid Feasible Region Polytope
+            poly_verts = get_3d_polytope_mesh(A_rows, signs, b_vals, max_3d)
+            if len(poly_verts) >= 4:
+                px = [p[0] for p in poly_verts]
+                py = [p[1] for p in poly_verts]
+                pz = [p[2] for p in poly_verts]
+                
+                fig_3d.add_trace(go.Mesh3d(
+                    x=px, y=py, z=pz,
+                    alphahull=0, opacity=0.35,
+                    color='#10b981', name="Feasible Region",
+                    showlegend=True,
+                    lighting=dict(ambient=0.7, diffuse=0.8)
+                ))
+
+            # Razor-sharp, vibrant constraint planes with crisp borders
+            add_smooth_3d_constraint_planes(fig_3d, A_rows, signs, b_vals, max_3d)
             
             if status == "Optimal":
                 fig_3d.add_trace(go.Scatter3d(
                     x=[sol[0]], y=[sol[1]], z=[sol[2]],
                     mode="markers+text", text=[f"Optimal Z*={final_z:.2f} ({sol[0]:.2f}, {sol[1]:.2f}, {sol[2]:.2f})"],
-                    marker=dict(size=10, color="#10b981", symbol="diamond"), name="Optimal Vertex"
+                    textfont=dict(color="#ffffff", size=13),
+                    marker=dict(size=10, color="#10b981", symbol="diamond", line=dict(color="white", width=2)), name="Optimal Vertex"
                 ))
-
-            colors_3d = ['Blues', 'Reds', 'Greens', 'Purples', 'Oranges']
-            for i in range(int(num_cons)):
-                a1, a2, a3, b_i = A_rows[i][0], A_rows[i][1], A_rows[i][2], b_vals[i]
-                if abs(a3) > 1e-6:
-                    X3d, Y3d = np.meshgrid(grid_rng, grid_rng)
-                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
-                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d), Z3d, np.nan)
-                    fig_3d.add_trace(go.Surface(
-                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d[i % len(colors_3d)], opacity=0.5, showscale=False,
-                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{signs[i]}{b_i}"
-                    ))
 
             fig_3d.update_layout(
                 scene=dict(
-                    xaxis=dict(title="x₁ (Decision Var 1)", range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
-                    yaxis=dict(title="x₂ (Decision Var 2)", range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
-                    zaxis=dict(title="x₃ (Decision Var 3)", range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
+                    dragmode='orbit',
+                    xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                 ),
-                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600,
-                legend=dict(font=dict(color="#f8fafc", size=13), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
+                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
-            st.plotly_chart(fig_3d, use_container_width=True)
+            st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
-    # 2. DUAL SIMPLEX METHOD (2D & 3D + RATIOS & LEGIBLE LABELS)
+    # 2. DUAL SIMPLEX METHOD (2D & 3D + RATIOS)
     # ------------------------------------------
     elif problem == "Dual Simplex Method":
         st.markdown("### ⚙️ Dual Simplex Problem Configuration")
@@ -592,7 +717,7 @@ else:
             def_c = -2.0 if j==0 else (-2.0 if j==1 else -4.0)
             with d_obj_cols[j]: d_c_vals.append(st.number_input(f"c{j+1}", value=def_c, key=f"d_c_{j}"))
 
-        st.markdown(f"### ⛓️ Constraints Setup:")
+        st.markdown(f"### ⛓️ Constraints Setup (Flexible Signs & RHS):")
         d_A_rows, d_signs, d_b_vals = [], [], []
         
         default_ds_a = [[-2.0, -3.0, -5.0], [-3.0, -1.0, -7.0]]
@@ -671,49 +796,59 @@ else:
                 fig_d.add_trace(go.Scatter(x=[d_sol[0]], y=[d_sol[1]], mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#f472b6", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
 
             fig_d.update_layout(
-                xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂",
-                xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=14), tickfont=dict(color="#f8fafc", size=12)),
-                yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=14), tickfont=dict(color="#f8fafc", size=12)),
-                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560,
-                legend=dict(font=dict(color="#f8fafc", size=13), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
+                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
             )
             st.plotly_chart(fig_d, use_container_width=True)
             
         elif int(d_num_vars) == 3:
-            st.markdown("#### 🧊 3D Dual Simplex Polytope & Optimal Vertex")
+            st.markdown("#### 🧊 3D Dual Simplex Feasible Region")
             fig_3d_d = go.Figure()
             max_3d_d = max([abs(val) for val in d_b_vals] + list(d_sol[:3]) + [5.0]) * 1.2
-            grid_rng_d = np.linspace(0, max_3d_d, 20)
+            
+            vis_A, vis_signs, vis_b = [], [], []
+            for i in range(int(d_num_cons)):
+                vis_A.append(d_A_rows[i])
+                vis_signs.append(d_signs[i])
+                vis_b.append(d_b_vals[i])
+
+            poly_verts_d = get_3d_polytope_mesh(vis_A, vis_signs, vis_b, max_3d_d)
+            if len(poly_verts_d) >= 4:
+                px = [p[0] for p in poly_verts_d]
+                py = [p[1] for p in poly_verts_d]
+                pz = [p[2] for p in poly_verts_d]
+                
+                fig_3d_d.add_trace(go.Mesh3d(
+                    x=px, y=py, z=pz,
+                    alphahull=0, opacity=0.35,
+                    color='#10b981', name="Feasible Region",
+                    showlegend=True,
+                    lighting=dict(ambient=0.7, diffuse=0.8)
+                ))
+
+            add_smooth_3d_constraint_planes(fig_3d_d, vis_A, vis_signs, vis_b, max_3d_d)
             
             if d_status == "Optimal":
                 fig_3d_d.add_trace(go.Scatter3d(
                     x=[d_sol[0]], y=[d_sol[1]], z=[d_sol[2]],
                     mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f} ({d_sol[0]:.2f}, {d_sol[1]:.2f}, {d_sol[2]:.2f})"],
-                    marker=dict(size=11, color="#f472b6", symbol="diamond"), name="Optimal Vertex"
+                    textfont=dict(color="#ffffff", size=13),
+                    marker=dict(size=11, color="#f472b6", symbol="diamond", line=dict(color="white", width=2)), name="Optimal Vertex"
                 ))
-
-            colors_3d_d = ['Greens', 'Oranges', 'Purples', 'Blues']
-            for i in range(int(d_num_cons)):
-                a1, a2, a3, b_i = d_A_rows[i][0], d_A_rows[i][1], d_A_rows[i][2], d_b_vals[i]
-                if abs(a3) > 1e-6:
-                    X3d, Y3d = np.meshgrid(grid_rng_d, grid_rng_d)
-                    Z3d = (b_i - a1 * X3d - a2 * Y3d) / a3
-                    Z3d = np.where((Z3d >= 0) & (Z3d <= max_3d_d), Z3d, np.nan)
-                    fig_3d_d.add_trace(go.Surface(
-                        x=X3d, y=Y3d, z=Z3d, colorscale=colors_3d_d[i % len(colors_3d_d)], opacity=0.55, showscale=False,
-                        name=f"C{i+1}: {a1}x₁+{a2}x₂+{a3}x₃{d_signs[i]}{b_i}"
-                    ))
 
             fig_3d_d.update_layout(
                 scene=dict(
-                    xaxis=dict(title="x₁ (Decision Var 1)", range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
-                    yaxis=dict(title="x₂ (Decision Var 2)", range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
-                    zaxis=dict(title="x₃ (Decision Var 3)", range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", titlefont=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)),
+                    dragmode='orbit',
+                    xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                 ),
-                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600,
-                legend=dict(font=dict(color="#f8fafc", size=13), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
+                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
-            st.plotly_chart(fig_3d_d, use_container_width=True)
+            st.plotly_chart(fig_3d_d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
     # 3. BRANCH AND BOUND
@@ -739,7 +874,7 @@ else:
             r_a = []
             for j in range(2):
                 with r_cols[j]: r_a.append(st.number_input(f"a_{i}_{j}", value=1.0 if (i==0 and j==0) else (3.0 if (i==0 and j==1) else (3.0 if (i==1 and j==0) else 1.0)), key=f"bb_a_{i}_{j}"))
-            with r_cols[2]: bb_signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"bb_sign_{i}"))
+            with r_cols[2]: bb_signs.append(st.selectbox(f"sign_{i}", ["<=", "="], key=f"bb_sign_{i}"))
             with r_cols[3]: bb_b.append(st.number_input(f"b_{i}", value=12.0 if i==0 else 10.0, key=f"bb_b_{i}"))
             bb_A.append(r_a)
 
@@ -849,12 +984,11 @@ else:
                             ))
 
                         fig_sub.update_layout(
-                            xaxis_title="Decision Variable x₁", yaxis_title="Decision Variable x₂", 
-                            xaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)), 
-                            yaxis=dict(range=[0, max_bound], dtick=1, gridcolor="#334155", title_font=dict(color="#f8fafc", size=13), tickfont=dict(color="#f8fafc", size=11)), 
+                            xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                            yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                            legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                             template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", 
-                            height=440, margin=dict(l=30, r=20, t=30, b=30),
-                            legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(15, 23, 42, 0.9)", bordercolor="rgba(148, 163, 184, 0.3)", borderwidth=1)
+                            height=440, margin=dict(l=30, r=20, t=30, b=30)
                         )
                         st.plotly_chart(fig_sub, use_container_width=True, key=f"plot_{node_id}")
 
@@ -908,7 +1042,7 @@ else:
             gr_a = []
             for j in range(int(g_vars)):
                 with gr_cols[j]: gr_a.append(st.number_input(f"a_{i}_{j}", value=2.0 if (i==0 and j==0) else (1.0 if (i==0 and j==1) else (1.0 if i==1 and j==0 else 2.0)), key=f"g_a_{i}_{j}"))
-            with gr_cols[int(g_vars)]: g_signs.append(st.selectbox(f"sign_{i}", ["<=", ">=", "="], key=f"g_sign_{i}"))
+            with gr_cols[int(g_vars)]: g_signs.append(st.selectbox(f"sign_{i}", ["<=", "="], key=f"g_sign_{i}"))
             with gr_cols[int(g_vars) + 1]: g_b.append(st.number_input(f"b_{i}", value=4.0, key=f"g_b_{i}"))
             g_A.append(gr_a)
 
