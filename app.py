@@ -566,6 +566,7 @@ else:
 
             fig_3d.update_layout(
                 scene=dict(
+                    dragmode='orbit',  # Enables free 3D orbit tumbling/rotation simultaneously with zoom
                     xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
@@ -573,7 +574,6 @@ else:
                 legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
-            # Enable scrollZoom configuration for seamless zooming & orbiting together
             st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
@@ -708,6 +708,7 @@ else:
 
             fig_3d_d.update_layout(
                 scene=dict(
+                    dragmode='orbit',  # Enables free 3D orbit tumbling/rotation simultaneously with zoom
                     xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
@@ -715,7 +716,6 @@ else:
                 legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
                 template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
             )
-            # Enable scrollZoom configuration for seamless zooming & orbiting together
             st.plotly_chart(fig_3d_d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
