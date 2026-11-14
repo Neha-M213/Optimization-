@@ -73,34 +73,48 @@ def go_home():
     st.session_state.selected_problem = None
 
 # ==========================================
-# HELPER: TABLEAU BUILDER (SIMPLEX = RATIO COL, DUAL = RATIO ROW)
+# HELPER: NUMBER FORMATTER (UP TO 3 DECIMALS, WHOLE NUMBERS AS .0)
+# ==========================================
+def fmt_num(val):
+    try:
+        f = float(val)
+        if abs(f - round(f)) < 1e-4:
+            return f"{round(f):.1f}"
+        else:
+            return f"{f:.3f}"
+    except:
+        return str(val)
+
+# ==========================================
+# HELPER: TABLEAU BUILDER
 # ==========================================
 def build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=True, include_ratio_row=False):
     num_cons = len(basis_indices)
     cb = cost_row[basis_indices]
     
-    cj_display = ["", "C_j ->", ""] + [round(float(val), 3) if abs(val) < 1e4 else ("-M" if val < 0 else "M") for val in cost_row]
+    cj_display = ["", "C_j ->", ""] + [fmt_num(val) if abs(val) < 1e4 else ("-M" if val < 0 else "M") for val in cost_row]
     if include_ratio_col:
         cj_display += [""]
     
     rows = [cj_display]
     for i in range(num_cons):
-        cb_str = round(float(cb[i]), 3) if abs(cb[i]) < 1e4 else ("-M" if cb[i] < 0 else "M")
+        cb_str = fmt_num(cb[i]) if abs(cb[i]) < 1e4 else ("-M" if cb[i] < 0 else "M")
         row_vals = [
             cb_str,
             var_names[basis_indices[i]],
-            round(float(rhs[i]), 4)
-        ] + [round(float(x), 4) for x in tableau[i]]
+            fmt_num(rhs[i])
+        ] + [fmt_num(x) for x in tableau[i]]
         if include_ratio_col:
-            row_vals += [ratios[i] if ratios is not None else "—"]
+            r_val = ratios[i] if ratios is not None else "—"
+            row_vals += [fmt_num(r_val) if r_val != "—" else "—"]
         rows.append(row_vals)
         
-    z_disp = round(float(z_val if obj_type == "Maximize" else -z_val), 4)
-    zj_row = ["", "Z_j", z_disp] + [round(float(val), 3) for val in zj]
+    z_disp = fmt_num(z_val if obj_type == "Maximize" else -z_val)
+    zj_row = ["", "Z_j", z_disp] + [fmt_num(val) for val in zj]
     if include_ratio_col:
         zj_row += [""]
         
-    cj_zj_row = ["", "C_j - Z_j", ""] + [round(float(val), 3) for val in cj_zj]
+    cj_zj_row = ["", "C_j - Z_j", ""] + [fmt_num(val) for val in cj_zj]
     if include_ratio_col:
         cj_zj_row += [""]
         
@@ -108,7 +122,7 @@ def build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj,
     rows.append(cj_zj_row)
     
     if include_ratio_row and ratios is not None:
-        ratio_row = ["", "Ratio", ""] + [r if r != "—" else "—" for r in ratios]
+        ratio_row = ["", "Ratio", ""] + [fmt_num(r) if r != "—" else "—" for r in ratios]
         if include_ratio_col:
             ratio_row += [""]
         rows.append(ratio_row)
@@ -120,8 +134,15 @@ def build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj,
     df = pd.DataFrame(rows, columns=cols)
     return df
 
+def get_point_from_basis(basis_indices, rhs, num_vars):
+    pt = np.zeros(num_vars)
+    for pos, b_idx in enumerate(basis_indices):
+        if b_idx < num_vars:
+            pt[b_idx] = rhs[pos]
+    return tuple(round(float(val), 3) for val in pt[:2])
+
 # ==========================================
-# HELPER: BIG-M SIMPLEX ENGINE (DEGENERACY & ALTERNATIVE OPTIMA)
+# HELPER: BIG-M SIMPLEX ENGINE
 # ==========================================
 def solve_simplex_big_m(obj_type, c, A, signs, b):
     M = 1e5
@@ -171,6 +192,7 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     is_degenerate = False
     has_alternative = False
     alt_solutions = []
+    degenerate_points = set()
     
     for it in range(30):
         cb = cost_row[basis_indices]
@@ -181,7 +203,9 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         for i, r_val in enumerate(rhs):
             if abs(r_val) <= 1e-6:
                 is_degenerate = True
-                special_flags.add(f"⚠️ **Degeneracy Detected:** Basic variable **{var_names[basis_indices[i]]}** has $b_i = 0$ at row {i+1}.")
+                deg_pt = get_point_from_basis(basis_indices, rhs, num_vars)
+                degenerate_points.add(deg_pt)
+                special_flags.add(f"⚠️ **Degeneracy Detected:** Basic variable **{var_names[basis_indices[i]]}** has $b_i = 0$ at row {i+1} (Vertex: {deg_pt}).")
 
         if np.max(cj_zj) <= 1e-7:
             non_basic_indices = [j for j in range(len(var_names)) if j not in basis_indices]
@@ -215,7 +239,7 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
                             alt_solutions.append(alt_sol)
 
             df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=True, include_ratio_row=False)
-            iterations.append((it + 1, df, "Optimal Tableau Reached (All $C_j - Z_j \\le 0$)"))
+            iterations.append((it + 1, df, "Optimal Tableau Reached (All $C_j - Z_j \\le 0$)", list(basis_indices), rhs.copy()))
             break
             
         entering_col = int(np.argmax(cj_zj))
@@ -225,7 +249,7 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
             status = "Unbounded"
             special_flags.add(f"🚩 **Unboundedness:** Pivot column {var_names[entering_col]} has entries ≤ 0.")
             df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=True, include_ratio_row=False)
-            iterations.append((it + 1, df, f"Unbounded at {var_names[entering_col]}"))
+            iterations.append((it + 1, df, f"Unbounded at {var_names[entering_col]}", list(basis_indices), rhs.copy()))
             break
             
         valid_ratios = []
@@ -241,7 +265,7 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         leaving_row = min(valid_ratios, key=lambda x: x[0])[1]
         
         df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=ratio_display, include_ratio_col=True, include_ratio_row=False)
-        iterations.append((it + 1, df, f"Entering: **{var_names[entering_col]}** | Leaving: **{var_names[basis_indices[leaving_row]]}**"))
+        iterations.append((it + 1, df, f"Entering: **{var_names[entering_col]}** | Leaving: **{var_names[basis_indices[leaving_row]]}**", list(basis_indices), rhs.copy()))
         
         pivot_val = tableau[leaving_row, entering_col]
         tableau[leaving_row] /= pivot_val
@@ -256,10 +280,10 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     sol = np.zeros(num_vars)
     for pos, b_idx in enumerate(basis_indices):
         if b_idx < num_vars: sol[b_idx] = rhs[pos]
-    return status, sol, float(c @ sol), iterations, list(special_flags), is_degenerate, has_alternative, alt_solutions, basis_indices, var_names, cj_zj
+    return status, sol, float(c @ sol), iterations, list(special_flags), is_degenerate, has_alternative, alt_solutions, basis_indices, var_names, cj_zj, list(degenerate_points)
 
 # ==========================================
-# HELPER: DUAL SIMPLEX ENGINE (RATIO ROW ONLY)
+# HELPER: DUAL SIMPLEX ENGINE
 # ==========================================
 def solve_simplex_dual(obj_type, c, A, signs, b):
     num_vars = len(c)
@@ -538,7 +562,7 @@ else:
     st.divider()
 
     # ------------------------------------------
-    # 1. SIMPLEX METHOD (RATIO COLUMN ONLY)
+    # 1. SIMPLEX METHOD
     # ------------------------------------------
     if problem == "Simplex Method":
         st.markdown("### ⚙️ Problem Configuration")
@@ -565,7 +589,7 @@ else:
             with row_cols[int(num_vars) + 1]: b_vals.append(st.number_input(f"b_{i}", value=10.0, key=f"b_{i}"))
             A_rows.append(row_a)
 
-        status, sol, final_z, iterations, flags, is_deg, has_alt, alt_sols, basis_idxs, var_nams, cj_zj_vals = solve_simplex_big_m(
+        status, sol, final_z, iterations, flags, is_deg, has_alt, alt_sols, basis_idxs, var_nams, cj_zj_vals, degenerate_points = solve_simplex_big_m(
             obj_type, np.array(c_vals), np.array(A_rows), signs, np.array(b_vals)
         )
 
@@ -577,16 +601,16 @@ else:
             st.success("✅ **Unique Optimal Solution Found**")
 
         if status == "Optimal":
-            sol_str = ", ".join([f"**x{j+1} = {sol[j]:.4f}**" for j in range(int(num_vars))])
-            st.info(f"**Optimal Objective Z = {final_z:.4f}** | {sol_str}")
+            sol_str = ", ".join([f"**x{j+1} = {sol[j]:.3f}**" for j in range(int(num_vars))])
+            st.info(f"**Optimal Objective Z = {final_z:.3f}** | {sol_str}")
             if has_alt:
                 for idx, alt_sol in enumerate(alt_sols):
-                    alt_str = ", ".join([f"**x{j+1} = {alt_sol[j]:.4f}**" for j in range(int(num_vars))])
-                    st.info(f"✨ **Alternative Optima #{idx+1}:** Z = {final_z:.4f} | {alt_str}")
+                    alt_str = ", ".join([f"**x{j+1} = {alt_sol[j]:.3f}**" for j in range(int(num_vars))])
+                    st.info(f"✨ **Alternative Optima #{idx+1}:** Z = {final_z:.3f} | {alt_str}")
 
         st.divider()
-        st.markdown("### 📋 Step-by-Step Simplex Tableaux (Ratio Column Only)")
-        for iter_num, df, note in iterations:
+        st.markdown("### 📋 Step-by-Step Simplex Tableaux")
+        for iter_num, df, note, _, _ in iterations:
             st.markdown(f"**Iteration {iter_num}** — {note}")
             def highlight_table(row):
                 styles = [''] * len(row)
@@ -617,6 +641,18 @@ else:
                 poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
                 fig.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(56, 189, 248, 0.3)", line=dict(color="#38bdf8", width=2.5), name="Feasible Region"))
 
+            # Label all corner points of the feasible region
+            for p in valid_verts:
+                fig.add_trace(go.Scatter(
+                    x=[p[0]], y=[p[1]],
+                    mode="markers+text",
+                    text=[f"({p[0]:.1f}, {p[1]:.1f})"],
+                    textposition="top right",
+                    textfont=dict(color="#38bdf8", size=11),
+                    marker=dict(size=7, color="#38bdf8", symbol="circle"),
+                    showlegend=False
+                ))
+
             for i in range(int(num_cons)):
                 a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
                 col_c = colors[i % len(colors)]
@@ -634,9 +670,16 @@ else:
                     fig.add_trace(go.Scatter(x=[alt_sol[0]], y=[alt_sol[1]], mode="markers+text", text=[f"Alt Optimum #{idx+1}"], textposition="top left", marker=dict(size=15, color="#c084fc", symbol="diamond", line=dict(width=2, color="white")), name=f"Alternative Optima #{idx+1}"))
 
             if is_deg:
-                for p in valid_verts:
-                    if any(np.isclose(A_rows[i][0]*p[0] + A_rows[i][1]*p[1], b_vals[i], atol=1e-3) and abs(b_vals[i]) <= 1e-5 for i in range(int(num_cons))) or (np.isclose(p[0], 0.0) and np.isclose(p[1], 0.0)):
-                        fig.add_trace(go.Scatter(x=[p[0]], y=[p[1]], mode="markers+text", text=["Degenerate Vertex (b=0)"], textposition="top center", marker=dict(size=14, color="#f59e0b", symbol="circle-open", line=dict(width=3, color="#f59e0b")), name="Degenerate Vertex"))
+                for dp in degenerate_points:
+                    fig.add_trace(go.Scatter(
+                        x=[dp[0]], y=[dp[1]],
+                        mode="markers+text",
+                        text=[f"Degenerate Vertex ({dp[0]:.1f}, {dp[1]:.1f})"],
+                        textposition="top center",
+                        textfont=dict(color="#f59e0b", size=12),
+                        marker=dict(size=14, color="#f59e0b", symbol="circle-open", line=dict(width=3, color="#f59e0b")),
+                        name="Degenerate Vertex"
+                    ))
 
             fig.update_layout(
                 xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
@@ -697,7 +740,7 @@ else:
             st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
-    # 2. DUAL SIMPLEX METHOD (RATIO ROW ONLY)
+    # 2. DUAL SIMPLEX METHOD
     # ------------------------------------------
     elif problem == "Dual Simplex Method":
         st.markdown("### ⚙️ Dual Simplex Problem Configuration")
@@ -743,11 +786,11 @@ else:
             st.success("✅ **Optimal Dual Simplex Solution Found**")
 
         if d_status == "Optimal":
-            d_sol_str = ", ".join([f"**x{j+1} = {d_sol[j]:.4f}**" for j in range(int(d_num_vars))])
-            st.info(f"**Optimal Objective Z = {d_final_z:.4f}** | {d_sol_str}")
+            d_sol_str = ", ".join([f"**x{j+1} = {d_sol[j]:.3f}**" for j in range(int(d_num_vars))])
+            st.info(f"**Optimal Objective Z = {d_final_z:.3f}** | {d_sol_str}")
 
         st.divider()
-        st.markdown("### 📋 Step-by-Step Dual Simplex Tableaux (Ratio Row Only at Bottom)")
+        st.markdown("### 📋 Step-by-Step Dual Simplex Tableaux")
         for iter_num, df, note in d_iterations:
             st.markdown(f"**Iteration {iter_num}** — {note}")
             st.dataframe(df, use_container_width=True, hide_index=True)
@@ -755,7 +798,7 @@ else:
         st.divider()
         st.markdown("### 📈 Feasible Region & Optimal Solution Visualisation")
         if int(d_num_vars) == 2:
-            max_rhs = max([abs(val) for val in d_b_vals]) if d_b_vals else 10.0
+            max_rhs = max([abs(val) for val in d_b_vals]) if b_vals else 10.0
             max_bound = max(max_rhs * 1.5, 8.0)
             x_line = np.linspace(0, max_bound, 200)
 
@@ -773,6 +816,18 @@ else:
                 poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
                 poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
                 fig_d.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(16, 185, 129, 0.25)", line=dict(color="#10b981", width=2.5), name="Feasible Region"))
+
+            # Label all corner points of the feasible region
+            for p in valid_verts:
+                fig_d.add_trace(go.Scatter(
+                    x=[p[0]], y=[p[1]],
+                    mode="markers+text",
+                    text=[f"({p[0]:.1f}, {p[1]:.1f})"],
+                    textposition="top right",
+                    textfont=dict(color="#34d399", size=11),
+                    marker=dict(size=7, color="#34d399", symbol="circle"),
+                    showlegend=False
+                ))
 
             for i in range(int(d_num_cons)):
                 a1, a2, b_i = vis_A[i][0], vis_A[i][1], vis_b[i]
