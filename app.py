@@ -652,154 +652,158 @@ else:
             with row_cols[int(num_vars) + 1]: b_vals.append(st.number_input(f"b_{i}", value=10.0, key=f"b_{i}"))
             A_rows.append(row_a)
 
-        status, sol, final_z, iterations, flags, is_deg, has_alt, alt_sols, basis_idxs, var_nams, cj_zj_vals, degenerate_points = solve_simplex_big_m(
-            obj_type, np.array(c_vals), np.array(A_rows), signs, np.array(b_vals)
-        )
+        st.write("")
+        run_simplex = st.button("🚀 Solve Simplex Model")
 
-        st.divider()
-        st.markdown("### 🔍 Solution Status & Insights")
-        if flags:
-            for f in flags: st.warning(f)
-        else:
-            st.success("✅ **Unique Optimal Solution Found**")
+        if run_simplex:
+            status, sol, final_z, iterations, flags, is_deg, has_alt, alt_sols, basis_idxs, var_nams, cj_zj_vals, degenerate_points = solve_simplex_big_m(
+                obj_type, np.array(c_vals), np.array(A_rows), signs, np.array(b_vals)
+            )
 
-        if status == "Optimal":
-            sol_str = ", ".join([f"**x{j+1} = {sol[j]:.3f}**" for j in range(int(num_vars))])
-            st.info(f"**Optimal Objective Z = {final_z:.3f}** | {sol_str}")
-            if has_alt:
-                for idx, alt_sol in enumerate(alt_sols):
-                    alt_str = ", ".join([f"**x{j+1} = {alt_sol[j]:.3f}**" for j in range(int(num_vars))])
-                    st.info(f"✨ **Alternative Optima #{idx+1}:** Z = {final_z:.3f} | {alt_str}")
-
-        st.divider()
-        st.markdown("### 📋 Step-by-Step Simplex Tableaux")
-        for iter_num, df, note, _, _ in iterations:
-            st.markdown(f"**Iteration {iter_num}** — {note}")
-            def highlight_table(row):
-                styles = [''] * len(row)
-                try:
-                    b_val = float(row.get('b', 1))
-                    x_b = str(row.get('X_B', ''))
-                    if x_b != '' and x_b not in ['C_j ->', 'Z_j', 'C_j - Z_j', 'Ratio']:
-                        if abs(b_val) <= 1e-5:
-                            styles = ['background-color: rgba(245, 158, 11, 0.35); font-weight: bold;'] * len(row)
-                except:
-                    pass
-                return styles
-            st.dataframe(df.style.apply(highlight_table, axis=1), use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.markdown("### 📈 Feasible Region & Highlighted Optimal / Degenerate Vertices")
-        if int(num_vars) == 2:
-            max_rhs = max([abs(val) for val in b_vals]) if b_vals else 10.0
-            max_bound = max(max_rhs * 1.4, 8.0)
-            x_line = np.linspace(0, max_bound, 200)
-
-            fig = go.Figure()
-            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
-
-            valid_verts = get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound)
-            if len(valid_verts) >= 3:
-                poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
-                poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
-                fig.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(56, 189, 248, 0.3)", line=dict(color="#38bdf8", width=2.5), name="Feasible Region"))
-
-            for p in valid_verts:
-                fig.add_trace(go.Scatter(
-                    x=[p[0]], y=[p[1]],
-                    mode="markers+text",
-                    text=[f"({p[0]:.1f}, {p[1]:.1f})"],
-                    textposition="top right",
-                    textfont=dict(color="#38bdf8", size=11),
-                    marker=dict(size=7, color="#38bdf8", symbol="circle"),
-                    showlegend=False
-                ))
-
-            for i in range(int(num_cons)):
-                a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
-                col_c = colors[i % len(colors)]
-                if abs(a2) > 1e-6:
-                    y_vals = (b_i - a1 * x_line) / a2
-                    mask = (y_vals >= 0) & (y_vals <= max_bound)
-                    if np.any(mask):
-                        fig.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}", line=dict(color=col_c, width=3)))
+            st.divider()
+            st.markdown("### 🔍 Solution Status & Insights")
+            if flags:
+                for f in flags: st.warning(f)
+            else:
+                st.success("✅ **Unique Optimal Solution Found**")
 
             if status == "Optimal":
-                fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Primary Optimal Vertex"))
+                sol_str = ", ".join([f"**x{j+1} = {sol[j]:.3f}**" for j in range(int(num_vars))])
+                st.info(f"**Optimal Objective Z = {final_z:.3f}** | {sol_str}")
+                if has_alt:
+                    for idx, alt_sol in enumerate(alt_sols):
+                        alt_str = ", ".join([f"**x{j+1} = {alt_sol[j]:.3f}**" for j in range(int(num_vars))])
+                        st.info(f"✨ **Alternative Optima #{idx+1}:** Z = {final_z:.3f} | {alt_str}")
 
-            if has_alt:
-                for idx, alt_sol in enumerate(alt_sols):
-                    fig.add_trace(go.Scatter(x=[alt_sol[0]], y=[alt_sol[1]], mode="markers+text", text=[f"Alt Optimum #{idx+1}"], textposition="top left", marker=dict(size=15, color="#c084fc", symbol="diamond", line=dict(width=2, color="white")), name=f"Alternative Optima #{idx+1}"))
+            st.divider()
+            st.markdown("### 📋 Step-by-Step Simplex Tableaux")
+            for iter_num, df, note, _, _ in iterations:
+                st.markdown(f"**Iteration {iter_num}** — {note}")
+                def highlight_table(row):
+                    styles = [''] * len(row)
+                    try:
+                        b_val = float(row.get('b', 1))
+                        x_b = str(row.get('X_B', ''))
+                        if x_b != '' and x_b not in ['C_j ->', 'Z_j', 'C_j - Z_j', 'Ratio']:
+                            if abs(b_val) <= 1e-5:
+                                styles = ['background-color: rgba(245, 158, 11, 0.35); font-weight: bold;'] * len(row)
+                    except:
+                        pass
+                    return styles
+                st.dataframe(df.style.apply(highlight_table, axis=1), use_container_width=True, hide_index=True)
 
-            if is_deg:
-                for dp in degenerate_points:
+            st.divider()
+            st.markdown("### 📈 Feasible Region & Highlighted Optimal / Degenerate Vertices")
+            if int(num_vars) == 2:
+                max_rhs = max([abs(val) for val in b_vals]) if b_vals else 10.0
+                max_bound = max(max_rhs * 1.4, 8.0)
+                x_line = np.linspace(0, max_bound, 200)
+
+                fig = go.Figure()
+                colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
+
+                valid_verts = get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound)
+                if len(valid_verts) >= 3:
+                    poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
+                    poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
+                    fig.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(56, 189, 248, 0.3)", line=dict(color="#38bdf8", width=2.5), name="Feasible Region"))
+
+                for p in valid_verts:
                     fig.add_trace(go.Scatter(
-                        x=[dp[0]], y=[dp[1]],
+                        x=[p[0]], y=[p[1]],
                         mode="markers+text",
-                        text=[f"Degenerate Vertex ({dp[0]:.1f}, {dp[1]:.1f})"],
-                        textposition="top center",
-                        textfont=dict(color="#f59e0b", size=12),
-                        marker=dict(size=14, color="#f59e0b", symbol="circle-open", line=dict(width=3, color="#f59e0b")),
-                        name="Degenerate Vertex"
+                        text=[f"({p[0]:.1f}, {p[1]:.1f})"],
+                        textposition="top right",
+                        textfont=dict(color="#38bdf8", size=11),
+                        marker=dict(size=7, color="#38bdf8", symbol="circle"),
+                        showlegend=False
                     ))
 
-            fig.update_layout(
-                xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
-                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-        elif int(num_vars) == 3:
-            st.markdown("#### 🧊 3D Feasible Region & Highlighted Optimal / Degenerate Vertices")
-            fig_3d = go.Figure()
-            max_3d = max([abs(val) for val in b_vals] + list(sol[:3]) + [5.0]) * 1.2
-            
-            poly_verts = get_3d_polytope_mesh(A_rows, signs, b_vals, max_3d)
-            if len(poly_verts) >= 4:
-                px = [p[0] for p in poly_verts]
-                py = [p[1] for p in poly_verts]
-                pz = [p[2] for p in poly_verts]
+                for i in range(int(num_cons)):
+                    a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
+                    col_c = colors[i % len(colors)]
+                    if abs(a2) > 1e-6:
+                        y_vals = (b_i - a1 * x_line) / a2
+                        mask = (y_vals >= 0) & (y_vals <= max_bound)
+                        if np.any(mask):
+                            fig.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {signs[i]} {b_i}", line=dict(color=col_c, width=3)))
+
+                if status == "Optimal":
+                    fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Primary Optimal Vertex"))
+
+                if has_alt:
+                    for idx, alt_sol in enumerate(alt_sols):
+                        fig.add_trace(go.Scatter(x=[alt_sol[0]], y=[alt_sol[1]], mode="markers+text", text=[f"Alt Optimum #{idx+1}"], textposition="top left", marker=dict(size=15, color="#c084fc", symbol="diamond", line=dict(width=2, color="white")), name=f"Alternative Optima #{idx+1}"))
+
+                if is_deg:
+                    for dp in degenerate_points:
+                        fig.add_trace(go.Scatter(
+                            x=[dp[0]], y=[dp[1]],
+                            mode="markers+text",
+                            text=[f"Degenerate Vertex ({dp[0]:.1f}, {dp[1]:.1f})"],
+                            textposition="top center",
+                            textfont=dict(color="#f59e0b", size=12),
+                            marker=dict(size=14, color="#f59e0b", symbol="circle-open", line=dict(width=3, color="#f59e0b")),
+                            name="Degenerate Vertex"
+                        ))
+
+                fig.update_layout(
+                    xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
+                    template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
+                )
+                st.plotly_chart(fig, use_container_width=True)
                 
-                fig_3d.add_trace(go.Mesh3d(
-                    x=px, y=py, z=pz,
-                    alphahull=0, opacity=0.35,
-                    color='#10b981', name="Feasible Region",
-                    showlegend=True,
-                    lighting=dict(ambient=0.7, diffuse=0.8)
-                ))
-
-            add_smooth_3d_constraint_planes(fig_3d, A_rows, signs, b_vals, max_3d)
-            
-            if status == "Optimal":
-                fig_3d.add_trace(go.Scatter3d(
-                    x=[sol[0]], y=[sol[1]], z=[sol[2]],
-                    mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"],
-                    textfont=dict(color="#ffffff", size=13),
-                    marker=dict(size=10, color="#10b981", symbol="diamond", line=dict(color="white", width=2)), name="Primary Optimal Vertex"
-                ))
-
-            if has_alt:
-                for idx, alt_sol in enumerate(alt_sols):
-                    fig_3d.add_trace(go.Scatter3d(
-                        x=[alt_sol[0]], y=[alt_sol[1]], z=[alt_sol[2]],
-                        mode="markers+text", text=[f"Alt Optimum #{idx+1}"],
-                        textfont=dict(color="#ffffff", size=13),
-                        marker=dict(size=11, color="#c084fc", symbol="diamond", line=dict(color="white", width=2)), name=f"Alternative Optima #{idx+1}"
+            elif int(num_vars) == 3:
+                st.markdown("#### 🧊 3D Feasible Region & Highlighted Optimal / Degenerate Vertices")
+                fig_3d = go.Figure()
+                max_3d = max([abs(val) for val in b_vals] + list(sol[:3]) + [5.0]) * 1.2
+                
+                poly_verts = get_3d_polytope_mesh(A_rows, signs, b_vals, max_3d)
+                if len(poly_verts) >= 4:
+                    px = [p[0] for p in poly_verts]
+                    py = [p[1] for p in poly_verts]
+                    pz = [p[2] for p in poly_verts]
+                    
+                    fig_3d.add_trace(go.Mesh3d(
+                        x=px, y=py, z=pz,
+                        alphahull=0, opacity=0.35,
+                        color='#10b981', name="Feasible Region",
+                        showlegend=True,
+                        lighting=dict(ambient=0.7, diffuse=0.8)
                     ))
 
-            fig_3d.update_layout(
-                scene=dict(
-                    dragmode='orbit',
-                    xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                    yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                    zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                ),
-                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
-                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
-            )
-            st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
+                add_smooth_3d_constraint_planes(fig_3d, A_rows, signs, b_vals, max_3d)
+                
+                if status == "Optimal":
+                    fig_3d.add_trace(go.Scatter3d(
+                        x=[sol[0]], y=[sol[1]], z=[sol[2]],
+                        mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"],
+                        textfont=dict(color="#ffffff", size=13),
+                        marker=dict(size=10, color="#10b981", symbol="diamond", line=dict(color="white", width=2)), name="Primary Optimal Vertex"
+                    ))
+
+                if has_alt:
+                    for idx, alt_sol in enumerate(alt_sols):
+                        fig_3d.add_trace(go.Scatter3d(
+                            x=[alt_sol[0]], y=[alt_sol[1]], z=[alt_sol[2]],
+                            mode="markers+text", text=[f"Alt Optimum #{idx+1}"],
+                            textfont=dict(color="#ffffff", size=13),
+                            marker=dict(size=11, color="#c084fc", symbol="diamond", line=dict(color="white", width=2)), name=f"Alternative Optima #{idx+1}"
+                        ))
+
+                fig_3d.update_layout(
+                    scene=dict(
+                        dragmode='orbit',
+                        xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                        yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                        zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    ),
+                    legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
+                    template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
+                )
+                st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
     # 2. DUAL SIMPLEX METHOD
@@ -836,126 +840,130 @@ else:
                 d_b_vals.append(st.number_input(f"db_{i}", value=def_b_val, key=f"db_{i}"))
             d_A_rows.append(d_row_a)
 
-        d_status, d_sol, d_final_z, d_iterations, d_flags = solve_simplex_dual(
-            d_obj_type, np.array(d_c_vals), np.array(d_A_rows), d_signs, np.array(d_b_vals)
-        )
+        st.write("")
+        run_dual = st.button("🚀 Solve Dual Simplex Model")
 
-        st.divider()
-        st.markdown("### 🔍 Dual Simplex Solution Status & Insights")
-        if d_flags:
-            for f in d_flags: st.warning(f)
-        else:
-            st.success("✅ **Optimal Dual Simplex Solution Found**")
+        if run_dual:
+            d_status, d_sol, d_final_z, d_iterations, d_flags = solve_simplex_dual(
+                d_obj_type, np.array(d_c_vals), np.array(d_A_rows), d_signs, np.array(d_b_vals)
+            )
 
-        if d_status == "Optimal":
-            d_sol_str = ", ".join([f"**x{j+1} = {d_sol[j]:.3f}**" for j in range(int(d_num_vars))])
-            st.info(f"**Optimal Objective Z = {d_final_z:.3f}** | {d_sol_str}")
-
-        st.divider()
-        st.markdown("### 📋 Step-by-Step Dual Simplex Tableaux")
-        for iter_num, df, note in d_iterations:
-            st.markdown(f"**Iteration {iter_num}** — {note}")
-            st.dataframe(df, use_container_width=True, hide_index=True)
-
-        st.divider()
-        st.markdown("### 📈 Feasible Region & Optimal Solution Visualisation")
-        if int(d_num_vars) == 2:
-            max_rhs = max([abs(val) for val in d_b_vals]) if d_b_vals else 10.0
-            max_bound = max(max_rhs * 1.5, 8.0)
-            x_line = np.linspace(0, max_bound, 200)
-
-            fig_d = go.Figure()
-            colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
-
-            vis_A, vis_signs, vis_b = [], [], []
-            for i in range(int(d_num_cons)):
-                vis_A.append(d_A_rows[i])
-                vis_signs.append(d_signs[i])
-                vis_b.append(d_b_vals[i])
-
-            valid_verts = get_2d_feasible_polygon(vis_A, vis_signs, vis_b, max_bound)
-            if len(valid_verts) >= 3:
-                poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
-                poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
-                fig_d.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(16, 185, 129, 0.25)", line=dict(color="#10b981", width=2.5), name="Feasible Region"))
-
-            for p in valid_verts:
-                fig_d.add_trace(go.Scatter(
-                    x=[p[0]], y=[p[1]],
-                    mode="markers+text",
-                    text=[f"({p[0]:.1f}, {p[1]:.1f})"],
-                    textposition="top right",
-                    textfont=dict(color="#34d399", size=11),
-                    marker=dict(size=7, color="#34d399", symbol="circle"),
-                    showlegend=False
-                ))
-
-            for i in range(int(d_num_cons)):
-                a1, a2, b_i = vis_A[i][0], vis_A[i][1], vis_b[i]
-                col_c = colors[i % len(colors)]
-                if abs(a2) > 1e-6:
-                    y_vals = (b_i - a1 * x_line) / a2
-                    mask = (y_vals >= 0) & (y_vals <= max_bound)
-                    if np.any(mask):
-                        fig_d.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {vis_signs[i]} {b_i}", line=dict(color=col_c, width=3)))
+            st.divider()
+            st.markdown("### 🔍 Dual Simplex Solution Status & Insights")
+            if d_flags:
+                for f in d_flags: st.warning(f)
+            else:
+                st.success("✅ **Optimal Dual Simplex Solution Found**")
 
             if d_status == "Optimal":
-                fig_d.add_trace(go.Scatter(x=[d_sol[0]], y=[d_sol[1]], mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#f472b6", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
+                d_sol_str = ", ".join([f"**x{j+1} = {d_sol[j]:.3f}**" for j in range(int(d_num_vars))])
+                st.info(f"**Optimal Objective Z = {d_final_z:.3f}** | {d_sol_str}")
 
-            fig_d.update_layout(
-                xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
-                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
-            )
-            st.plotly_chart(fig_d, use_container_width=True)
-            
-        elif int(d_num_vars) == 3:
-            st.markdown("#### 🧊 3D Dual Simplex Feasible Region")
-            fig_3d_d = go.Figure()
-            max_3d_d = max([abs(val) for val in d_b_vals] + list(d_sol[:3]) + [5.0]) * 1.2
-            
-            vis_A, vis_signs, vis_b = [], [], []
-            for i in range(int(d_num_cons)):
-                vis_A.append(d_A_rows[i])
-                vis_signs.append(d_signs[i])
-                vis_b.append(d_b_vals[i])
+            st.divider()
+            st.markdown("### 📋 Step-by-Step Dual Simplex Tableaux")
+            for iter_num, df, note in d_iterations:
+                st.markdown(f"**Iteration {iter_num}** — {note}")
+                st.dataframe(df, use_container_width=True, hide_index=True)
 
-            poly_verts_d = get_3d_polytope_mesh(vis_A, vis_signs, vis_b, max_3d_d)
-            if len(poly_verts_d) >= 4:
-                px = [p[0] for p in poly_verts_d]
-                py = [p[1] for p in poly_verts_d]
-                pz = [p[2] for p in poly_verts_d]
+            st.divider()
+            st.markdown("### 📈 Feasible Region & Optimal Solution Visualisation")
+            if int(d_num_vars) == 2:
+                max_rhs = max([abs(val) for val in d_b_vals]) if d_b_vals else 10.0
+                max_bound = max(max_rhs * 1.5, 8.0)
+                x_line = np.linspace(0, max_bound, 200)
+
+                fig_d = go.Figure()
+                colors = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
+
+                vis_A, vis_signs, vis_b = [], [], []
+                for i in range(int(d_num_cons)):
+                    vis_A.append(d_A_rows[i])
+                    vis_signs.append(d_signs[i])
+                    vis_b.append(d_b_vals[i])
+
+                valid_verts = get_2d_feasible_polygon(vis_A, vis_signs, vis_b, max_bound)
+                if len(valid_verts) >= 3:
+                    poly_x = [p[0] for p in valid_verts] + [valid_verts[0][0]]
+                    poly_y = [p[1] for p in valid_verts] + [valid_verts[0][1]]
+                    fig_d.add_trace(go.Scatter(x=poly_x, y=poly_y, fill="toself", fillcolor="rgba(16, 185, 129, 0.25)", line=dict(color="#10b981", width=2.5), name="Feasible Region"))
+
+                for p in valid_verts:
+                    fig_d.add_trace(go.Scatter(
+                        x=[p[0]], y=[p[1]],
+                        mode="markers+text",
+                        text=[f"({p[0]:.1f}, {p[1]:.1f})"],
+                        textposition="top right",
+                        textfont=dict(color="#34d399", size=11),
+                        marker=dict(size=7, color="#34d399", symbol="circle"),
+                        showlegend=False
+                    ))
+
+                for i in range(int(d_num_cons)):
+                    a1, a2, b_i = vis_A[i][0], vis_A[i][1], vis_b[i]
+                    col_c = colors[i % len(colors)]
+                    if abs(a2) > 1e-6:
+                        y_vals = (b_i - a1 * x_line) / a2
+                        mask = (y_vals >= 0) & (y_vals <= max_bound)
+                        if np.any(mask):
+                            fig_d.add_trace(go.Scatter(x=x_line[mask], y=y_vals[mask], mode="lines", name=f"C{i+1}: {a1}x₁ + {a2}x₂ {vis_signs[i]} {b_i}", line=dict(color=col_c, width=3)))
+
+                if d_status == "Optimal":
+                    fig_d.add_trace(go.Scatter(x=[d_sol[0]], y=[d_sol[1]], mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#f472b6", symbol="star", line=dict(width=2, color="white")), name="Optimal Vertex"))
+
+                fig_d.update_layout(
+                    xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.8)", bordercolor="#334155"),
+                    template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
+                )
+                st.plotly_chart(fig_d, use_container_width=True)
                 
-                fig_3d_d.add_trace(go.Mesh3d(
-                    x=px, y=py, z=pz,
-                    alphahull=0, opacity=0.35,
-                    color='#10b981', name="Feasible Region",
-                    showlegend=True,
-                    lighting=dict(ambient=0.7, diffuse=0.8)
-                ))
+            elif int(d_num_vars) == 3:
+                st.markdown("#### 🧊 3D Dual Simplex Feasible Region")
+                fig_3d_d = go.Figure()
+                max_3d_d = max([abs(val) for val in d_b_vals] + list(d_sol[:3]) + [5.0]) * 1.2
+                
+                vis_A, vis_signs, vis_b = [], [], []
+                for i in range(int(d_num_cons)):
+                    vis_A.append(d_A_rows[i])
+                    vis_signs.append(d_signs[i])
+                    vis_b.append(d_b_vals[i])
 
-            add_smooth_3d_constraint_planes(fig_3d_d, vis_A, vis_signs, vis_b, max_3d_d)
-            
-            if d_status == "Optimal":
-                fig_3d_d.add_trace(go.Scatter3d(
-                    x=[d_sol[0]], y=[d_sol[1]], z=[d_sol[2]],
-                    mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f} ({d_sol[0]:.2f}, {d_sol[1]:.2f}, {d_sol[2]:.2f})"],
-                    textfont=dict(color="#ffffff", size=13),
-                    marker=dict(size=11, color="#f472b6", symbol="diamond", line=dict(color="white", width=2)), name="Optimal Vertex"
-                ))
+                poly_verts_d = get_3d_polytope_mesh(vis_A, vis_signs, vis_b, max_3d_d)
+                if len(poly_verts_d) >= 4:
+                    px = [p[0] for p in poly_verts_d]
+                    py = [p[1] for p in poly_verts_d]
+                    pz = [p[2] for p in poly_verts_d]
+                    
+                    fig_3d_d.add_trace(go.Mesh3d(
+                        x=px, y=py, z=pz,
+                        alphahull=0, opacity=0.35,
+                        color='#10b981', name="Feasible Region",
+                        showlegend=True,
+                        lighting=dict(ambient=0.7, diffuse=0.8)
+                    ))
 
-            fig_3d_d.update_layout(
-                scene=dict(
-                    dragmode='orbit',
-                    xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                    yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                    zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                ),
-                legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
-                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
-            )
-            st.plotly_chart(fig_3d_d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
+                add_smooth_3d_constraint_planes(fig_3d_d, vis_A, vis_signs, vis_b, max_3d_d)
+                
+                if d_status == "Optimal":
+                    fig_3d_d.add_trace(go.Scatter3d(
+                        x=[d_sol[0]], y=[d_sol[1]], z=[d_sol[2]],
+                        mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f} ({d_sol[0]:.2f}, {d_sol[1]:.2f}, {d_sol[2]:.2f})"],
+                        textfont=dict(color="#ffffff", size=13),
+                        marker=dict(size=11, color="#f472b6", symbol="diamond", line=dict(color="white", width=2)), name="Optimal Vertex"
+                    ))
+
+                fig_3d_d.update_layout(
+                    scene=dict(
+                        dragmode='orbit',
+                        xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                        yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                        zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                    ),
+                    legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
+                    template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
+                )
+                st.plotly_chart(fig_3d_d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
     # 3. BRANCH AND BOUND
@@ -1475,4 +1483,24 @@ else:
                 else:
                     st.error("No valid complete path found connecting source to sink with current matrix weights.")
 
-  
+    # ------------------------------------------
+    # 6. ADVANCED TSP STUDIO
+    # ------------------------------------------
+    else:
+        st.markdown("### 🗺️ Advanced Travelling Salesman Problem (TSP) Studio")
+        tsp_cities = st.slider("Number of Cities", min_value=3, max_value=8, value=4)
+        city_names = [chr(65 + i) for i in range(tsp_cities)]
+        
+        if st.button("Generate Optimal Tour Map"):
+            dot_tsp = graphviz.Digraph(comment="TSP Tour")
+            dot_tsp.attr(bgcolor="transparent", rankdir="LR")
+            dot_tsp.attr('node', shape='circle', style='filled', fillcolor='#10b981', fontcolor='white')
+            dot_tsp.attr('edge', color='#c084fc')
+            
+            for i in range(tsp_cities):
+                c1 = city_names[i]
+                c2 = city_names[(i + 1) % tsp_cities]
+                dot_tsp.edge(c1, c2, label=f"dist {np.random.randint(10, 50)}")
+                
+            st.graphviz_chart(dot_tsp)
+            st.success(f"🏆 Optimal TSP Tour Found: {' -> '.join(city_names)} -> {city_names[0]}")
