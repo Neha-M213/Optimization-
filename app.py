@@ -1475,24 +1475,4 @@ else:
                 else:
                     st.error("No valid complete path found connecting source to sink with current matrix weights.")
 
-    # ------------------------------------------
-    # 6. ADVANCED TSP STUDIO
-    # ------------------------------------------
-    else:
-        st.markdown("### 🗺️ Advanced Travelling Salesman Problem (TSP) Studio")
-        tsp_cities = st.slider("Number of Cities", min_value=3, max_value=8, value=4)
-        city_names = [chr(65 + i) for i in range(tsp_cities)]
-        
-        if st.button("Generate Optimal Tour Map"):
-            dot_tsp = graphviz.Digraph(comment="TSP Tour")
-            dot_tsp.attr(bgcolor="transparent", rankdir="LR")
-            dot_tsp.attr('node', shape='circle', style='filled', fillcolor='#10b981', fontcolor='white')
-            dot_tsp.attr('edge', color='#c084fc')
-            
-            for i in range(tsp_cities):
-                c1 = city_names[i]
-                c2 = city_names[(i + 1) % tsp_cities]
-                dot_tsp.edge(c1, c2, label=f"dist {np.random.randint(10, 50)}")
-                
-            st.graphviz_chart(dot_tsp)
-            st.success(f"🏆 Optimal TSP Tour Found: {' -> '.join(city_names)} -> {city_names[0]}")
+  
