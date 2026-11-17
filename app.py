@@ -454,7 +454,7 @@ def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
     return nodes, tree_edges
 
 # ==========================================
-# HELPER: 2D & 3D GEOMETRY GENERATORS (Fixed Polygon Clipping)
+# HELPER: 2D & 3D GEOMETRY GENERATORS
 # ==========================================
 def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
     num_cons = len(b_vals)
@@ -462,10 +462,8 @@ def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
     
     for i in range(num_cons):
         a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
-        # Intersections with axes
         if abs(a2) > 1e-7: candidates.append((0.0, b_i / a2))
         if abs(a1) > 1e-7: candidates.append((b_i / a1, 0.0))
-        # Intersections with boundary box walls (fixes unbounded clipping wedge)
         if abs(a2) > 1e-7: candidates.append((max_bound, (b_i - a1 * max_bound) / a2))
         if abs(a1) > 1e-7: candidates.append(((b_i - a2 * max_bound) / a1, max_bound))
             
@@ -598,7 +596,7 @@ def add_smooth_3d_constraint_planes(fig, A_rows, signs, b_vals, max_3d):
                     ))
 
 # ==========================================
-# HELPER: HUNGARIAN TSP ASSIGNMENT ENGINE (For n >= 6)
+# HELPER: HUNGARIAN TSP ASSIGNMENT ENGINE
 # ==========================================
 def get_min_lines(mat):
     n = len(mat)
@@ -653,17 +651,17 @@ def get_min_lines(mat):
 def solve_tsp_assignment(cost_matrix, city_labels):
     n = len(cost_matrix)
     mat = cost_matrix.copy().astype(float)
+    # Treat 0 as infinity for TSP diagonal/unconnected paths during conversion
+    mat[mat == 0] = np.inf
     np.fill_diagonal(mat, np.inf)
     
     steps = []
     steps.append(("Initial Cost Matrix (Diagonal = ∞ for TSP)", mat.copy()))
     
-    # Row Reduction
     row_mins = np.min(mat, axis=1)
     row_reduced = mat - row_mins[:, np.newaxis]
     steps.append(("Row Reduction (Subtract row minimums)", row_reduced.copy()))
     
-    # Column Reduction
     col_mins = np.min(row_reduced, axis=0)
     col_reduced = row_reduced - col_mins
     steps.append(("Column Reduction (Subtract column minimums)", col_reduced.copy()))
@@ -678,7 +676,6 @@ def solve_tsp_assignment(cost_matrix, city_labels):
         if num_lines >= n:
             break
             
-        # Find min uncut element
         min_val = float('inf')
         for r in range(n):
             if not lines_info['covered_rows'][r]:
@@ -687,7 +684,6 @@ def solve_tsp_assignment(cost_matrix, city_labels):
                         if curr_mat[r, c] < min_val:
                             min_val = curr_mat[r, c]
                             
-        # Matrix adjustment
         for r in range(n):
             for c in range(n):
                 if not lines_info['covered_rows'][r] and not lines_info['covered_cols'][c]:
@@ -702,21 +698,24 @@ def solve_tsp_assignment(cost_matrix, city_labels):
     return steps, assignment, curr_mat
 
 # ==========================================
-# VIEW 1: LANDING SCREEN
+# VIEW 1: LANDING SCREEN (Balanced 3x2 Grid)
 # ==========================================
 if st.session_state.selected_problem is None:
     st.markdown('<div class="hero-title">What are we doing today?</div>', unsafe_allow_html=True)
     st.markdown('<div class="hero-sub">Select an optimization technique below to enter your parameters and visualize the solution.</div>', unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns(3, gap="large")
-    with col1: st.button("📈 Simplex Method", on_click=select_problem, args=("Simplex Method",))
-    with col2: st.button("🔄 Dual Simplex Method", on_click=select_problem, args=("Dual Simplex Method",))
-    with col3: st.button("🌳 Branch and Bound", on_click=select_problem, args=("Branch and Bound",))
+    # Top Row (3 items)
+    row1_c1, row1_c2, row1_c3 = st.columns(3, gap="large")
+    with row1_c1: st.button("📈 Simplex Method", on_click=select_problem, args=("Simplex Method",))
+    with row1_c2: st.button("✂️ Cutting Plane Method", on_click=select_problem, args=("Cutting Plane Method",))
+    with row1_c3: st.button("🔄 Dual Simplex Method", on_click=select_problem, args=("Dual Simplex Method",))
 
     st.write("")
-    col4, col5 = st.columns(2, gap="large")
-    with col4: st.button("✂️ Gomory Fractional Cut", on_click=select_problem, args=("Gomory Fractional Cut",))
-    with col5: st.button("🌐 Network & TSP Solver", on_click=select_problem, args=("Network & TSP Solver",))
+    
+    # Bottom Row (2 items centered using empty outer columns)
+    row2_space1, row2_c1, row2_c2, row2_space2 = st.columns([0.5, 3, 3, 0.5], gap="large")
+    with row2_c1: st.button("🌳 Branch and Bound", on_click=select_problem, args=("Branch and Bound",))
+    with row2_c2: st.button("🌐 Network & TSP Solver", on_click=select_problem, args=("Network & TSP Solver",))
 
 # ==========================================
 # VIEW 2: DEDICATED WORKSPACE
@@ -915,7 +914,14 @@ else:
                 st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
-    # 2. DUAL SIMPLEX METHOD
+    # 2. CUTTING PLANE METHOD (Renamed from Gomory Fractional Cut)
+    # ------------------------------------------
+    elif problem == "Cutting Plane Method":
+        st.markdown("### ✂️ Cutting Plane Method Studio")
+        st.markdown("Solve Integer Linear Programming (ILP) problems using cutting plane and fractional cut iterations.")
+
+    # ------------------------------------------
+    # 3. DUAL SIMPLEX METHOD
     # ------------------------------------------
     elif problem == "Dual Simplex Method":
         st.markdown("### ⚙️ Dual Simplex Problem Configuration")
@@ -1075,7 +1081,7 @@ else:
                 st.plotly_chart(fig_3d_d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
-    # 3. BRANCH AND BOUND
+    # 4. BRANCH AND BOUND
     # ------------------------------------------
     elif problem == "Branch and Bound":
         st.markdown("### ⚙️ Step 1: ILP Problem Configuration")
@@ -1241,13 +1247,6 @@ else:
                             st.error(f"**Subproblem Status:** {n_status}\n\n*This branch is pruned/infeasible.*")
 
     # ------------------------------------------
-    # 4. GOMORY FRACTIONAL CUT METHOD
-    # ------------------------------------------
-    elif problem == "Gomory Fractional Cut":
-        st.markdown("### ✂️ Gomory Fractional Cutting Plane Studio")
-        st.markdown("Solve Integer Linear Programming (ILP) problems starting from the relaxed optimal simplex table.")
-
-    # ------------------------------------------
     # 5. NETWORK & TSP SOLVER
     # ------------------------------------------
     elif problem == "Network & TSP Solver":
@@ -1263,7 +1262,8 @@ else:
             
             start_end_city = st.selectbox("Select Start & End City (TSP Closed Loop)", city_labels, index=0)
             
-            default_matrix = np.full((num_cities, num_cities), 999.0)
+            # Default un-connected values set to 0.0 instead of 999
+            default_matrix = np.zeros((num_cities, num_cities))
             preset_vals = [
                 [0, 10, 15, 20],
                 [5, 0, 9, 10],
@@ -1277,8 +1277,14 @@ else:
             matrix_df = pd.DataFrame(default_matrix, columns=city_labels, index=city_labels)
             edited_df = st.data_editor(matrix_df, use_container_width=True)
             
-            # BRANCH: If num_cities >= 6, use Assignment Method (Hungarian Algorithm step-by-step)
-            if num_cities >= 6:
+            # Method Selection for TSP
+            if num_cities <= 5:
+                tsp_method = st.radio("Select TSP Solution Method", ["Hungarian Assignment Method", "Bellman-Held-Karp DP Method"], horizontal=True)
+            else:
+                tsp_method = "Hungarian Assignment Method"
+                st.info("ℹ️ Number of cities ≥ 6: Automatically using Hungarian Assignment Method for performance and clarity.")
+
+            if tsp_method == "Hungarian Assignment Method":
                 if st.button("Compute TSP via Assignment Method (Hungarian Steps)"):
                     dist_mat = edited_df.values.astype(float)
                     steps, assignment, final_mat = solve_tsp_assignment(dist_mat, city_labels)
@@ -1304,9 +1310,12 @@ else:
                     st.success(f"🏆 **Optimal Assignment Tour:** {' | '.join(path_desc)} | **Total Minimum Cost = {int(total_cost)}**")
             
             else:
-                # Bellman-Held-Karp DP for n < 6
                 if st.button("Compute Optimal TSP Tour & Bellman-Held-Karp State Tree"):
                     dist_mat = edited_df.values.astype(float)
+                    # Convert 0.0 un-connected entries to infinity for DP computation
+                    dist_mat[dist_mat == 0] = float('inf')
+                    np.fill_diagonal(dist_mat, 0)
+                    
                     start_idx = city_labels.index(start_end_city)
                     n = num_cities
                     other_cities = [i for i in range(n) if i != start_idx]
@@ -1428,7 +1437,8 @@ else:
                     node_stages[node] = st.number_input(f"Node {node} Stage", min_value=1, max_value=5, value=default_stage, key=f"stage_node_{node}")
 
             st.markdown("##### 2. Network Adjacency Matrix (Edge Weights)")
-            default_net = np.full((num_net_nodes, num_net_nodes), 999.0)
+            # Default un-connected values set to 0.0 instead of 999
+            default_net = np.zeros((num_net_nodes, num_net_nodes))
             default_connections = [
                 (0,1,5), (0,2,14), (0,3,6),
                 (1,2,6), (1,4,12), (1,5,12),
@@ -1446,6 +1456,8 @@ else:
             
             if st.button("Compute Stagewise Shortest Route & Tables"):
                 matrix_vals = edited_net_df.values.astype(float)
+                # Treat 0 as infinity for network routing absence
+                matrix_vals[matrix_vals == 0] = float('inf')
                 
                 if "Backward" in net_method:
                     sink = num_net_nodes - 1
@@ -1467,7 +1479,7 @@ else:
                             for next_node_str in net_labels:
                                 v_idx = net_labels.index(next_node_str)
                                 wt = matrix_vals[u_idx, v_idx]
-                                if wt < 900 and v_idx in [net_labels.index(n) for n, s in node_stages.items() if s > stg]:
+                                if wt < float('inf') and v_idx in [net_labels.index(n) for n, s in node_stages.items() if s > stg]:
                                     if v_idx in f_cost:
                                         total_cost = wt + f_cost[v_idx]
                                         row_dict[f"to {next_node_str}"] = f"{int(wt)} + {int(f_cost[v_idx])} = {int(total_cost)}"
@@ -1501,7 +1513,7 @@ else:
                         for next_node_str in net_labels:
                             v_idx = net_labels.index(next_node_str)
                             wt = matrix_vals[u_idx, v_idx]
-                            if wt < 900 and v_idx in f_cost:
+                            if wt < float('inf') and v_idx in f_cost:
                                 total_cost = wt + f_cost[v_idx]
                                 row_dict[f"to {next_node_str}"] = f"{int(wt)} + {int(f_cost[v_idx])} = {int(total_cost)}"
                                 if total_cost < best_val:
@@ -1550,7 +1562,7 @@ else:
                             for prev_node_str in net_labels:
                                 u_idx = net_labels.index(prev_node_str)
                                 wt = matrix_vals[u_idx, v_idx]
-                                if wt < 900 and u_idx in prev_stage_indices and u_idx in f_cost:
+                                if wt < float('inf') and u_idx in prev_stage_indices and u_idx in f_cost:
                                     total_cost = f_cost[u_idx] + wt
                                     row_dict[f"from {prev_node_str}"] = f"{int(f_cost[u_idx])} + {int(wt)} = {int(total_cost)}"
                                     if total_cost < best_val:
@@ -1602,7 +1614,7 @@ else:
                 for r in range(num_net_nodes):
                     for c in range(num_net_nodes):
                         wt_val = matrix_vals[r, c]
-                        if wt_val < 900:
+                        if wt_val < float('inf'):
                             u_name = net_labels[r]
                             v_name = net_labels[c]
                             is_opt = (u_name, v_name) in opt_pairs
