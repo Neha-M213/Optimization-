@@ -207,41 +207,10 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
                 is_degenerate = True
                 deg_pt = get_point_from_basis(basis_indices, rhs, num_vars)
                 degenerate_points.add(deg_pt)
-                special_flags.add(f"⚠️ **Degeneracy Detected:** Basic variable **{var_names[basis_indices[i]]}** has $b_i = 0$ at row {i+1} (Vertex: {deg_pt}).")
 
         if np.max(cj_zj) <= 1e-7:
-            non_basic_indices = [j for j in range(len(var_names)) if j not in basis_indices]
-            for nb_idx in non_basic_indices:
-                if abs(cj_zj[nb_idx]) <= 1e-7:
-                    has_alternative = True
-                    special_flags.add(f"✨ **Alternative Optima Detected:** Non-basic variable **{var_names[nb_idx]}** has $C_j - Z_j = 0$.")
-                    
-                    col_vals = tableau[:, nb_idx]
-                    if any(col_vals > 1e-7):
-                        valid_r = [(rhs[i] / col_vals[i], i) for i in range(num_cons) if col_vals[i] > 1e-7]
-                        if valid_r:
-                            l_row = min(valid_r, key=lambda x: x[0])[1]
-                            t_dup = tableau.copy()
-                            r_dup = rhs.copy()
-                            b_dup = list(basis_indices)
-                            
-                            p_val = t_dup[l_row, nb_idx]
-                            t_dup[l_row] /= p_val
-                            r_dup[l_row] /= p_val
-                            for ri in range(num_cons):
-                                if ri != l_row:
-                                    fac = t_dup[ri, nb_idx]
-                                    t_dup[ri] -= fac * t_dup[l_row]
-                                    r_dup[ri] -= fac * r_dup[l_row]
-                            b_dup[l_row] = nb_idx
-                            
-                            alt_sol = np.zeros(num_vars)
-                            for pos, b_idx in enumerate(b_dup):
-                                if b_idx < num_vars: alt_sol[b_idx] = r_dup[pos]
-                            alt_solutions.append(alt_sol)
-
             df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=True, include_ratio_row=False)
-            iterations.append((it + 1, df, "Optimal Tableau Reached (All $C_j - Z_j \\le 0$)", list(basis_indices), rhs.copy()))
+            iterations.append((it + 1, df, "Optimal Tableau Reached (All C_j - Z_j ≤ 0)", list(basis_indices), rhs.copy()))
             break
             
         entering_col = int(np.argmax(cj_zj))
@@ -249,7 +218,6 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
         
         if all(col_vals <= 1e-7):
             status = "Unbounded"
-            special_flags.add(f"🚩 **Unboundedness:** Pivot column {var_names[entering_col]} has entries ≤ 0.")
             df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=True, include_ratio_row=False)
             iterations.append((it + 1, df, f"Unbounded at {var_names[entering_col]}", list(basis_indices), rhs.copy()))
             break
@@ -331,14 +299,11 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
         
         if np.max(cj_zj) > 1e-7:
             status = "Dual Infeasible"
-            special_flags.add("🚩 **Dual Infeasibility:** $C_j - Z_j > 0$ found.")
-            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=False, include_ratio_row=True)
-            iterations.append((it + 1, df, "Dual Infeasible Tableau"))
             break
             
         if np.all(rhs >= -1e-7):
             df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=False, include_ratio_row=True)
-            iterations.append((it + 1, df, "Optimal Dual Simplex Tableau Reached (All $b_i \\ge 0$)"))
+            iterations.append((it + 1, df, "Optimal Dual Simplex Tableau Reached"))
             break
             
         leaving_row = int(np.argmin(rhs))
@@ -348,9 +313,6 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
         col_vals = tableau[leaving_row]
         if np.all(col_vals >= -1e-7):
             status = "Infeasible"
-            special_flags.add(f"🚩 **Primal Infeasibility / Dual Unboundedness:** Leaving row {leaving_row+1} has all entries $\\ge 0$ with negative RHS.")
-            df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=False, include_ratio_row=True)
-            iterations.append((it + 1, df, f"Infeasible at Row {leaving_row+1}"))
             break
             
         valid_ratios = []
@@ -389,6 +351,82 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
         
     final_z_val = float(c @ sol)
     return status, sol, final_z_val, iterations, list(special_flags)
+
+# ==========================================
+# HELPER: CUTTING PLANE METHOD ENGINE
+# ==========================================
+def solve_gomory_cutting_plane_2d(obj_type, c, A_init, signs_init, b_init):
+    current_A = [list(row) for row in A_init]
+    current_signs = list(signs_init)
+    current_b = list(b_init)
+    
+    history = []
+    max_iter = 6
+    
+    for it in range(max_iter):
+        status, sol, z_val, iterations, flags, is_deg, has_alt, alt_sols, basis_idxs, var_nams, cj_zj_vals, deg_pts = solve_simplex_big_m(
+            obj_type, c, np.array(current_A), current_signs, np.array(current_b)
+        )
+        
+        if status != "Optimal":
+            return "Infeasible or Unbounded", history, None
+            
+        opt_sol = sol[:2]
+        is_integer = all(np.isclose(val, round(val), atol=1e-3) for val in opt_sol)
+        
+        # Display ONLY the optimal simplex table as requested
+        optimal_tableau_info = iterations[-1]
+        
+        history.append({
+            "iteration": it + 1,
+            "solution": opt_sol.copy(),
+            "z": z_val,
+            "tableau_df": optimal_tableau_info[1],
+            "tableau_note": optimal_tableau_info[2],
+            "basis_indices": optimal_tableau_info[3],
+            "rhs": optimal_tableau_info[4],
+            "var_names": var_nams,
+            "constraints": (copy.deepcopy(current_A), list(current_signs), list(current_b)),
+            "is_integer": is_integer
+        })
+        
+        if is_integer:
+            return "Integer Optimal Solution Found", history, opt_sol
+            
+        # Select row with largest fractional part
+        best_row = -1
+        max_frac = -1.0
+        rhs = optimal_tableau_info[4]
+        
+        for pos, b_val in enumerate(rhs):
+            frac = b_val - np.floor(b_val)
+            if frac > 1e-3 and frac < 1 - 1e-3:
+                if frac > max_frac:
+                    max_frac = frac
+                    best_row = pos
+                    
+        if best_row == -1:
+            break
+            
+        row_series = optimal_tableau_info[1].iloc[best_row]
+        b_bar = float(row_series['b'])
+        f_i0 = b_bar - np.floor(b_bar)
+        
+        a_x1 = float(row_series['x1']) if 'x1' in row_series else 0.0
+        a_x2 = float(row_series['x2']) if 'x2' in row_series else 0.0
+        
+        def frac(val):
+            return val - np.floor(val)
+            
+        f_1 = frac(a_x1)
+        f_2 = frac(a_x2)
+        
+        # Add Gomory Fractional Cut
+        current_A.append([-float(f_1), -float(f_2)])
+        current_signs.append("<=")
+        current_b.append(-float(f_i0))
+        
+    return "Max Iterations Reached", history, None
 
 # ==========================================
 # HELPER: DYNAMIC BRANCH & BOUND ENGINE
@@ -651,7 +689,6 @@ def get_min_lines(mat):
 def solve_tsp_assignment(cost_matrix, city_labels):
     n = len(cost_matrix)
     mat = cost_matrix.copy().astype(float)
-    # Treat 0 as infinity for TSP diagonal/unconnected paths during conversion
     mat[mat == 0] = np.inf
     np.fill_diagonal(mat, np.inf)
     
@@ -712,7 +749,7 @@ if st.session_state.selected_problem is None:
 
     st.write("")
     
-    # Bottom Row (2 items centered using empty outer columns)
+    # Bottom Row (2 items centered)
     row2_space1, row2_c1, row2_c2, row2_space2 = st.columns([0.5, 3, 3, 0.5], gap="large")
     with row2_c1: st.button("🌳 Branch and Bound", on_click=select_problem, args=("Branch and Bound",))
     with row2_c2: st.button("🌐 Network & TSP Solver", on_click=select_problem, args=("Network & TSP Solver",))
@@ -839,22 +876,6 @@ else:
                 if status == "Optimal":
                     fig.add_trace(go.Scatter(x=[sol[0]], y=[sol[1]], mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"], textposition="bottom right", marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")), name="Primary Optimal Vertex"))
 
-                if has_alt:
-                    for idx, alt_sol in enumerate(alt_sols):
-                        fig.add_trace(go.Scatter(x=[alt_sol[0]], y=[alt_sol[1]], mode="markers+text", text=[f"Alt Optimum #{idx+1}"], textposition="top left", marker=dict(size=15, color="#c084fc", symbol="diamond", line=dict(width=2, color="white")), name=f"Alternative Optima #{idx+1}"))
-
-                if is_deg:
-                    for dp in degenerate_points:
-                        fig.add_trace(go.Scatter(
-                            x=[dp[0]], y=[dp[1]],
-                            mode="markers+text",
-                            text=[f"Degenerate Vertex ({dp[0]:.1f}, {dp[1]:.1f})"],
-                            textposition="top center",
-                            textfont=dict(color="#f59e0b", size=12),
-                            marker=dict(size=14, color="#f59e0b", symbol="circle-open", line=dict(width=3, color="#f59e0b")),
-                            name="Degenerate Vertex"
-                        ))
-
                 fig.update_layout(
                     xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
                     yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
@@ -862,63 +883,180 @@ else:
                     template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
                 )
                 st.plotly_chart(fig, use_container_width=True)
-                
-            elif int(num_vars) == 3:
-                st.markdown("#### 🧊 3D Feasible Region & Highlighted Optimal / Degenerate Vertices")
-                fig_3d = go.Figure()
-                max_3d = max([abs(val) for val in b_vals] + list(sol[:3]) + [5.0]) * 1.2
-                
-                poly_verts = get_3d_polytope_mesh(A_rows, signs, b_vals, max_3d)
-                if len(poly_verts) >= 4:
-                    px = [p[0] for p in poly_verts]
-                    py = [p[1] for p in poly_verts]
-                    pz = [p[2] for p in poly_verts]
-                    
-                    fig_3d.add_trace(go.Mesh3d(
-                        x=px, y=py, z=pz,
-                        alphahull=0, opacity=0.35,
-                        color='#10b981', name="Feasible Region",
-                        showlegend=True,
-                        lighting=dict(ambient=0.7, diffuse=0.8)
-                    ))
-
-                add_smooth_3d_constraint_planes(fig_3d, A_rows, signs, b_vals, max_3d)
-                
-                if status == "Optimal":
-                    fig_3d.add_trace(go.Scatter3d(
-                        x=[sol[0]], y=[sol[1]], z=[sol[2]],
-                        mode="markers+text", text=[f"Optimal Z*={final_z:.2f}"],
-                        textfont=dict(color="#ffffff", size=13),
-                        marker=dict(size=10, color="#10b981", symbol="diamond", line=dict(color="white", width=2)), name="Primary Optimal Vertex"
-                    ))
-
-                if has_alt:
-                    for idx, alt_sol in enumerate(alt_sols):
-                        fig_3d.add_trace(go.Scatter3d(
-                            x=[alt_sol[0]], y=[alt_sol[1]], z=[alt_sol[2]],
-                            mode="markers+text", text=[f"Alt Optimum #{idx+1}"],
-                            textfont=dict(color="#ffffff", size=13),
-                            marker=dict(size=11, color="#c084fc", symbol="diamond", line=dict(color="white", width=2)), name=f"Alternative Optima #{idx+1}"
-                        ))
-
-                fig_3d.update_layout(
-                    scene=dict(
-                        dragmode='orbit',
-                        xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                        yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                        zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                    ),
-                    legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
-                    template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
-                )
-                st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
-    # 2. CUTTING PLANE METHOD (Renamed from Gomory Fractional Cut)
+    # 2. CUTTING PLANE METHOD
     # ------------------------------------------
     elif problem == "Cutting Plane Method":
         st.markdown("### ✂️ Cutting Plane Method Studio")
-        st.markdown("Solve Integer Linear Programming (ILP) problems using cutting plane and fractional cut iterations.")
+        st.markdown("Solve Integer Linear Programming (ILP) problems using continuous LP relaxation, Gomory fractional cuts, and Dual Simplex re-optimization.")
+
+        cp1, cp2, cp3 = st.columns(3)
+        with cp1: cp_obj = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="cp_goal")
+        with cp2: cp_vars = st.number_input("Variables count", min_value=2, max_value=2, value=2, step=1, key="cp_v")
+        with cp3: cp_cons = st.number_input("Constraints count", min_value=1, max_value=8, value=2, step=1, key="cp_c")
+
+        st.markdown("#### Objective Function Coefficients ($c_j$):")
+        cp_c_cols = st.columns(2)
+        cp_c_vals = []
+        for j in range(2):
+            with cp_c_cols[j]: cp_c_vals.append(st.number_input(f"c{j+1}", value=3.0 if j==0 else 4.0, key=f"cp_c_{j}"))
+
+        st.markdown("#### Constraints Setup (≤, =, ≥):")
+        cp_A, cp_signs, cp_b = [], [], []
+        default_cp_a = [[3.0, 2.0], [1.0, 4.0]]
+        default_cp_b = [12.0, 11.0]
+        
+        for i in range(int(cp_cons)):
+            st.markdown(f"**Constraint {i+1}:**")
+            r_cols = st.columns(4)
+            r_a = []
+            for j in range(2):
+                def_a = default_cp_a[i][j] if i < 2 else 1.0
+                with r_cols[j]: r_a.append(st.number_input(f"cp_a_{i}_{j}", value=def_a, key=f"cp_a_{i}_{j}"))
+            with r_cols[2]: cp_signs.append(st.selectbox(f"cp_sign_{i}", ["<=", ">=", "="], key=f"cp_sign_{i}"))
+            with r_cols[3]: 
+                def_b = default_cp_b[i] if i < 2 else 10.0
+                cp_b.append(st.number_input(f"cp_b_{i}", value=def_b, key=f"cp_b_{i}"))
+            cp_A.append(r_a)
+
+        if st.button("🚀 Solve via Cutting Plane Method"):
+            status_msg, history, opt_sol = solve_gomory_cutting_plane_2d(
+                cp_obj, np.array(cp_c_vals), np.array(cp_A), cp_signs, np.array(cp_b)
+            )
+            
+            st.divider()
+            st.markdown("### 🔍 Cutting Plane Solution Summary & Final Result")
+            if "Integer Optimal" in status_msg:
+                st.success(f"✅ **{status_msg}**\n\nOptimal Integer Solution: **$x_1 = {opt_sol[0]:.3f}, x_2 = {opt_sol[1]:.3f}$** | Optimal Objective Z = **{history[-1]['z']:.3f}**")
+            else:
+                st.warning(f"⚠️ **Status:** {status_msg}")
+
+            st.divider()
+            st.markdown("### 📋 Optimal Simplex Relaxation Table (Per Iteration)")
+            for item in history:
+                it_num = item["iteration"]
+                is_int = item["is_integer"]
+                sol_pt = item["solution"]
+                z_val = item["z"]
+                
+                status_badge = "🟢 Integer Optimal" if is_int else "🟠 Fractional Solution (Cut Generated)"
+                st.markdown(f"**Iteration {it_num}** — Solution: $x_1 = {sol_pt[0]:.3f}, x_2 = {sol_pt[1]:.3f}$, $Z = {z_val:.3f}$ [{status_badge}]")
+                st.markdown(f"*Tableau Note:* {item['tableau_note']}")
+                st.dataframe(item["tableau_df"], use_container_width=True, hide_index=True)
+
+            st.divider()
+            st.markdown("### 📈 Feasible Region, Lattice Points & Gomory Cuts Animation")
+            st.caption("Visualizing the initial feasible region, integer lattice points, LP relaxation optimum, integer optimum, and successive dashed Gomory cutting planes.")
+
+            max_b_val = max(cp_b) * 1.5 if cp_b else 10.0
+            max_bound = max(max_b_val, 10.0)
+            x_grid = np.linspace(0, max_bound, 300)
+
+            fig_cp = go.Figure()
+
+            # 1. Plot initial feasible region
+            init_verts = get_2d_feasible_polygon(cp_A, cp_signs, cp_b, max_bound)
+            if len(init_verts) >= 3:
+                px = [p[0] for p in init_verts] + [init_verts[0][0]]
+                py = [p[1] for p in init_verts] + [init_verts[0][1]]
+                fig_cp.add_trace(go.Scatter(
+                    x=px, y=py, fill="toself",
+                    fillcolor="rgba(56, 189, 248, 0.25)",
+                    line=dict(color="#38bdf8", width=2.5),
+                    name="Initial Feasible Region"
+                ))
+
+            # 2. Plot integer lattice points inside bounding box
+            lattice_x = []
+            lattice_y = []
+            for xi in range(int(max_bound) + 1):
+                for yi in range(int(max_bound) + 1):
+                    ok = True
+                    for i in range(len(cp_b)):
+                        val = cp_A[i][0] * xi + cp_A[i][1] * yi
+                        s = cp_signs[i]
+                        b_i = cp_b[i]
+                        if s == "<=" and val > b_i + 1e-4: ok = False; break
+                        elif s == ">=" and val < b_i - 1e-4: ok = False; break
+                        elif s == "=" and not np.isclose(val, b_i, atol=1e-3): ok = False; break
+                    if ok:
+                        lattice_x.append(xi)
+                        lattice_y.append(yi)
+
+            fig_cp.add_trace(go.Scatter(
+                x=lattice_x, y=lattice_y,
+                mode="markers",
+                marker=dict(size=6, color="#94a3b8", symbol="circle"),
+                name="Integer Lattice Points"
+            ))
+
+            # 3. Plot original constraints
+            colors_list = ['#f43f5e', '#f59e0b', '#10b981', '#a855f7', '#c084fc']
+            for i in range(len(cp_b)):
+                a1, a2, b_i = cp_A[i][0], cp_A[i][1], cp_b[i]
+                c_col = colors_list[i % len(colors_list)]
+                if abs(a2) > 1e-6:
+                    y_vals = (b_i - a1 * x_grid) / a2
+                    mask = (y_vals >= 0) & (y_vals <= max_bound)
+                    if np.any(mask):
+                        fig_cp.add_trace(go.Scatter(
+                            x=x_grid[mask], y=y_vals[mask],
+                            mode="lines",
+                            name=f"Constraint {i+1}: {a1}x₁ + {a2}x₂ {cp_signs[i]} {b_i}",
+                            line=dict(color=c_col, width=2.5)
+                        ))
+
+            # 4. Plot Gomory cuts as dashed lines across iterations
+            for idx, item in enumerate(history):
+                constraints_at_it = item["constraints"][0]
+                signs_at_it = item["constraints"][1]
+                b_at_it = item["constraints"][2]
+                
+                if len(constraints_at_it) > len(cp_A):
+                    for ci in range(len(cp_A), len(constraints_at_it)):
+                        ca1, ca2 = constraints_at_it[ci][0], constraints_at_it[ci][1]
+                        cb_val = b_at_it[ci]
+                        
+                        if abs(ca2) > 1e-6:
+                            cy_vals = (cb_val - ca1 * x_grid) / ca2
+                            cmask = (cy_vals >= 0) & (cy_vals <= max_bound)
+                            if np.any(cmask):
+                                fig_cp.add_trace(go.Scatter(
+                                    x=x_grid[cmask], y=cy_vals[cmask],
+                                    mode="lines",
+                                    name=f"Gomory Cut #{ci - len(cp_A) + 1} (Iter {idx})",
+                                    line=dict(color="#ef4444", width=3, dash="dash")
+                                ))
+
+            # 5. Highlight LP Optimal point vs Integer Optimal point
+            first_sol = history[0]["solution"]
+            fig_cp.add_trace(go.Scatter(
+                x=[first_sol[0]], y=[first_sol[1]],
+                mode="markers+text",
+                text=[f"LP Opt ({first_sol[0]:.2f}, {first_sol[1]:.2f})"],
+                textposition="top right",
+                marker=dict(size=14, color="#38bdf8", symbol="star", line=dict(width=2, color="white")),
+                name="LP Relaxation Optimal"
+            ))
+
+            if opt_sol is not None:
+                fig_cp.add_trace(go.Scatter(
+                    x=[opt_sol[0]], y=[opt_sol[1]],
+                    mode="markers+text",
+                    text=[f"Integer Opt ({opt_sol[0]:.1f}, {opt_sol[1]:.1f})"],
+                    textposition="bottom left",
+                    marker=dict(size=16, color="#10b981", symbol="diamond", line=dict(width=2, color="white")),
+                    name="Integer Optimal Solution"
+                ))
+
+            fig_cp.update_layout(
+                xaxis=dict(title=dict(text="Decision Variable x₁", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                yaxis=dict(title=dict(text="Decision Variable x₂", font=dict(color="#f8fafc", size=14)), range=[0, max_bound], dtick=1, gridcolor="#334155", tickfont=dict(color="#f8fafc")),
+                legend=dict(font=dict(color="#f8fafc", size=11), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
+                template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
+            )
+            st.plotly_chart(fig_cp, use_container_width=True)
 
     # ------------------------------------------
     # 3. DUAL SIMPLEX METHOD
@@ -1032,53 +1170,6 @@ else:
                     template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=560
                 )
                 st.plotly_chart(fig_d, use_container_width=True)
-                
-            elif int(d_num_vars) == 3:
-                st.markdown("#### 🧊 3D Dual Simplex Feasible Region")
-                fig_3d_d = go.Figure()
-                max_3d_d = max([abs(val) for val in d_b_vals] + list(d_sol[:3]) + [5.0]) * 1.2
-                
-                vis_A, vis_signs, vis_b = [], [], []
-                for i in range(int(d_num_cons)):
-                    vis_A.append(d_A_rows[i])
-                    vis_signs.append(d_signs[i])
-                    vis_b.append(d_b_vals[i])
-
-                poly_verts_d = get_3d_polytope_mesh(vis_A, vis_signs, vis_b, max_3d_d)
-                if len(poly_verts_d) >= 4:
-                    px = [p[0] for p in poly_verts_d]
-                    py = [p[1] for p in poly_verts_d]
-                    pz = [p[2] for p in poly_verts_d]
-                    
-                    fig_3d_d.add_trace(go.Mesh3d(
-                        x=px, y=py, z=pz,
-                        alphahull=0, opacity=0.35,
-                        color='#10b981', name="Feasible Region",
-                        showlegend=True,
-                        lighting=dict(ambient=0.7, diffuse=0.8)
-                    ))
-
-                add_smooth_3d_constraint_planes(fig_3d_d, vis_A, vis_signs, vis_b, max_3d_d)
-                
-                if d_status == "Optimal":
-                    fig_3d_d.add_trace(go.Scatter3d(
-                        x=[d_sol[0]], y=[d_sol[1]], z=[d_sol[2]],
-                        mode="markers+text", text=[f"Optimal Z*={d_final_z:.2f} ({d_sol[0]:.2f}, {d_sol[1]:.2f}, {d_sol[2]:.2f})"],
-                        textfont=dict(color="#ffffff", size=13),
-                        marker=dict(size=11, color="#f472b6", symbol="diamond", line=dict(color="white", width=2)), name="Optimal Vertex"
-                    ))
-
-                fig_3d_d.update_layout(
-                    scene=dict(
-                        dragmode='orbit',
-                        xaxis=dict(title=dict(text="x₁", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                        yaxis=dict(title=dict(text="x₂", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                        zaxis=dict(title=dict(text="x₃", font=dict(color="#f8fafc", size=13)), range=[0, max_3d_d], backgroundcolor="#1e293b", gridcolor="#334155", tickfont=dict(color="#f8fafc")),
-                    ),
-                    legend=dict(font=dict(color="#f8fafc", size=12), bgcolor="rgba(30, 41, 59, 0.85)", bordercolor="#334155"),
-                    template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#1e293b", height=600
-                )
-                st.plotly_chart(fig_3d_d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
     # 4. BRANCH AND BOUND
@@ -1262,7 +1353,6 @@ else:
             
             start_end_city = st.selectbox("Select Start & End City (TSP Closed Loop)", city_labels, index=0)
             
-            # Default un-connected values set to 0.0 instead of 999
             default_matrix = np.zeros((num_cities, num_cities))
             preset_vals = [
                 [0, 10, 15, 20],
@@ -1277,7 +1367,6 @@ else:
             matrix_df = pd.DataFrame(default_matrix, columns=city_labels, index=city_labels)
             edited_df = st.data_editor(matrix_df, use_container_width=True)
             
-            # Method Selection for TSP
             if num_cities <= 5:
                 tsp_method = st.radio("Select TSP Solution Method", ["Hungarian Assignment Method", "Bellman-Held-Karp DP Method"], horizontal=True)
             else:
@@ -1312,7 +1401,6 @@ else:
             else:
                 if st.button("Compute Optimal TSP Tour & Bellman-Held-Karp State Tree"):
                     dist_mat = edited_df.values.astype(float)
-                    # Convert 0.0 un-connected entries to infinity for DP computation
                     dist_mat[dist_mat == 0] = float('inf')
                     np.fill_diagonal(dist_mat, 0)
                     
@@ -1437,7 +1525,6 @@ else:
                     node_stages[node] = st.number_input(f"Node {node} Stage", min_value=1, max_value=5, value=default_stage, key=f"stage_node_{node}")
 
             st.markdown("##### 2. Network Adjacency Matrix (Edge Weights)")
-            # Default un-connected values set to 0.0 instead of 999
             default_net = np.zeros((num_net_nodes, num_net_nodes))
             default_connections = [
                 (0,1,5), (0,2,14), (0,3,6),
@@ -1456,7 +1543,6 @@ else:
             
             if st.button("Compute Stagewise Shortest Route & Tables"):
                 matrix_vals = edited_net_df.values.astype(float)
-                # Treat 0 as infinity for network routing absence
                 matrix_vals[matrix_vals == 0] = float('inf')
                 
                 if "Backward" in net_method:
