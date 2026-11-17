@@ -73,11 +73,13 @@ def go_home():
     st.session_state.selected_problem = None
 
 # ==========================================
-# HELPER: NUMBER FORMATTER (UP TO 3 DECIMALS, WHOLE NUMBERS AS .0)
+# HELPER: NUMBER FORMATTER
 # ==========================================
 def fmt_num(val):
     try:
         f = float(val)
+        if np.isinf(f):
+            return "∞"
         if abs(f - round(f)) < 1e-4:
             return f"{round(f):.1f}"
         else:
@@ -452,7 +454,7 @@ def solve_branch_and_bound_tree(obj_type, c, A_init, signs_init, b_init):
     return nodes, tree_edges
 
 # ==========================================
-# HELPER: 2D & 3D GEOMETRY GENERATORS
+# HELPER: 2D & 3D GEOMETRY GENERATORS (Fixed Polygon Clipping)
 # ==========================================
 def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
     num_cons = len(b_vals)
@@ -460,8 +462,12 @@ def get_2d_feasible_polygon(A_rows, signs, b_vals, max_bound):
     
     for i in range(num_cons):
         a1, a2, b_i = A_rows[i][0], A_rows[i][1], b_vals[i]
+        # Intersections with axes
         if abs(a2) > 1e-7: candidates.append((0.0, b_i / a2))
         if abs(a1) > 1e-7: candidates.append((b_i / a1, 0.0))
+        # Intersections with boundary box walls (fixes unbounded clipping wedge)
+        if abs(a2) > 1e-7: candidates.append((max_bound, (b_i - a1 * max_bound) / a2))
+        if abs(a1) > 1e-7: candidates.append(((b_i - a2 * max_bound) / a1, max_bound))
             
     for i in range(num_cons):
         for j in range(i + 1, num_cons):
@@ -592,6 +598,110 @@ def add_smooth_3d_constraint_planes(fig, A_rows, signs, b_vals, max_3d):
                     ))
 
 # ==========================================
+# HELPER: HUNGARIAN TSP ASSIGNMENT ENGINE (For n >= 6)
+# ==========================================
+def get_min_lines(mat):
+    n = len(mat)
+    zeros = (mat <= 1e-7)
+    row_mate = [-1] * n
+    col_mate = [-1] * n
+    
+    def find_path(u, visited_cols):
+        for v in range(n):
+            if zeros[u, v] and not visited_cols[v]:
+                visited_cols[v] = True
+                if col_mate[v] == -1 or find_path(col_mate[v], visited_cols):
+                    col_mate[v] = u
+                    row_mate[u] = v
+                    return True
+        return False
+
+    for i in range(n):
+        visited_cols = [False] * n
+        find_path(i, visited_cols)
+        
+    unmatched_rows = [i for i in range(n) if row_mate[i] == -1]
+    marked_rows = set(unmatched_rows)
+    marked_cols = set()
+    
+    changed = True
+    while changed:
+        changed = False
+        for r in list(marked_rows):
+            for c in range(n):
+                if zeros[r, c] and c not in marked_cols:
+                    marked_cols.add(c)
+                    changed = True
+        for c in list(marked_cols):
+            r = col_mate[c]
+            if r != -1 and r not in marked_rows:
+                marked_rows.add(r)
+                changed = True
+                
+    covered_rows = [r not in marked_rows for r in range(n)]
+    covered_cols = [c in marked_cols for c in range(n)]
+    num_lines = sum(covered_rows) + sum(covered_cols)
+    
+    return {
+        'num_lines': num_lines,
+        'covered_rows': covered_rows,
+        'covered_cols': covered_cols,
+        'row_mate': row_mate,
+        'col_mate': col_mate
+    }
+
+def solve_tsp_assignment(cost_matrix, city_labels):
+    n = len(cost_matrix)
+    mat = cost_matrix.copy().astype(float)
+    np.fill_diagonal(mat, np.inf)
+    
+    steps = []
+    steps.append(("Initial Cost Matrix (Diagonal = ∞ for TSP)", mat.copy()))
+    
+    # Row Reduction
+    row_mins = np.min(mat, axis=1)
+    row_reduced = mat - row_mins[:, np.newaxis]
+    steps.append(("Row Reduction (Subtract row minimums)", row_reduced.copy()))
+    
+    # Column Reduction
+    col_mins = np.min(row_reduced, axis=0)
+    col_reduced = row_reduced - col_mins
+    steps.append(("Column Reduction (Subtract column minimums)", col_reduced.copy()))
+    
+    curr_mat = col_reduced.copy()
+    
+    for iteration in range(10):
+        lines_info = get_min_lines(curr_mat)
+        num_lines = lines_info['num_lines']
+        steps.append((f"Line Coverage Iteration {iteration+1} (Min Lines N = {num_lines}, n = {n})", curr_mat.copy(), lines_info))
+        
+        if num_lines >= n:
+            break
+            
+        # Find min uncut element
+        min_val = float('inf')
+        for r in range(n):
+            if not lines_info['covered_rows'][r]:
+                for c in range(n):
+                    if not lines_info['covered_cols'][c]:
+                        if curr_mat[r, c] < min_val:
+                            min_val = curr_mat[r, c]
+                            
+        # Matrix adjustment
+        for r in range(n):
+            for c in range(n):
+                if not lines_info['covered_rows'][r] and not lines_info['covered_cols'][c]:
+                    curr_mat[r, c] -= min_val
+                elif lines_info['covered_rows'][r] and lines_info['covered_cols'][c]:
+                    curr_mat[r, c] += min_val
+                    
+        steps.append((f"Matrix Adjustment (Subtracted & Added min uncut element {min_val})", curr_mat.copy()))
+        
+    final_info = get_min_lines(curr_mat)
+    assignment = final_info['row_mate']
+    return steps, assignment, curr_mat
+
+# ==========================================
 # VIEW 1: LANDING SCREEN
 # ==========================================
 if st.session_state.selected_problem is None:
@@ -604,10 +714,9 @@ if st.session_state.selected_problem is None:
     with col3: st.button("🌳 Branch and Bound", on_click=select_problem, args=("Branch and Bound",))
 
     st.write("")
-    col4, col5, col6 = st.columns(3, gap="large")
+    col4, col5 = st.columns(2, gap="large")
     with col4: st.button("✂️ Gomory Fractional Cut", on_click=select_problem, args=("Gomory Fractional Cut",))
     with col5: st.button("🌐 Network & TSP Solver", on_click=select_problem, args=("Network & TSP Solver",))
-    with col6: st.button("🗺️ Advanced TSP Studio", on_click=select_problem, args=("Advanced TSP Studio",))
 
 # ==========================================
 # VIEW 2: DEDICATED WORKSPACE
@@ -1011,7 +1120,6 @@ else:
             st.graphviz_chart(dot_bb)
             st.success(f"✨ Branch and Bound exploration complete across {len(nodes)} subproblems.")
 
-            # --- SUBPROBLEM GEOMETRY & STRIP DELETION GALLERY ---
             st.divider()
             st.markdown("### 📐 Subproblem Geometry, Strip Deletion & LPP Construction Gallery")
             st.caption("Each subproblem graph highlights the feasible region polygon, labeled corner points, active constraints, and branching cuts with high-contrast text.")
@@ -1150,7 +1258,7 @@ else:
 
         if "TSP" in prob_type:
             st.markdown("#### 🗺️ Fully Flexible TSP Distance Matrix Configuration")
-            num_cities = int(st.number_input("Number of Cities", min_value=3, max_value=6, value=4, step=1))
+            num_cities = int(st.number_input("Number of Cities", min_value=3, max_value=8, value=4, step=1))
             city_labels = [chr(65 + i) for i in range(num_cities)]
             
             start_end_city = st.selectbox("Select Start & End City (TSP Closed Loop)", city_labels, index=0)
@@ -1169,111 +1277,139 @@ else:
             matrix_df = pd.DataFrame(default_matrix, columns=city_labels, index=city_labels)
             edited_df = st.data_editor(matrix_df, use_container_width=True)
             
-            if st.button("Compute Optimal TSP Tour & Bellman-Held-Karp State Tree"):
-                dist_mat = edited_df.values.astype(float)
-                start_idx = city_labels.index(start_end_city)
-                n = num_cities
-                other_cities = [i for i in range(n) if i != start_idx]
-                
-                memo_dp = {}
-                def compute_dp(i, S):
-                    state = (i, frozenset(S))
-                    if state in memo_dp:
-                        return memo_dp[state]
-                    if not S:
-                        cost = dist_mat[i][start_idx]
-                        memo_dp[state] = (cost, start_idx)
-                        return memo_dp[state]
+            # BRANCH: If num_cities >= 6, use Assignment Method (Hungarian Algorithm step-by-step)
+            if num_cities >= 6:
+                if st.button("Compute TSP via Assignment Method (Hungarian Steps)"):
+                    dist_mat = edited_df.values.astype(float)
+                    steps, assignment, final_mat = solve_tsp_assignment(dist_mat, city_labels)
                     
-                    min_cost = float('inf')
-                    best_next = -1
-                    for j in S:
-                        sub_cost, _ = compute_dp(j, S - {j})
-                        total = dist_mat[i][j] + sub_cost
-                        if total < min_cost:
-                            min_cost = total
-                            best_next = j
-                    memo_dp[state] = (min_cost, best_next)
-                    return memo_dp[state]
-
-                all_S = frozenset(other_cities)
-                opt_cost, _ = compute_dp(start_idx, all_S)
-                
-                optimal_states_set = set()
-                curr_i = start_idx
-                curr_S = all_S
-                while curr_S:
-                    _, nxt = memo_dp[(curr_i, curr_S)]
-                    optimal_states_set.add((curr_i, curr_S))
-                    curr_i = nxt
-                    curr_S = curr_S - {nxt}
-                optimal_states_set.add((curr_i, frozenset()))
-
-                dot_tsp = graphviz.Digraph(comment="TSP Unrolled DP State Tree")
-                dot_tsp.attr(bgcolor="transparent", rankdir="TB")
-                dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#1e293b', color='#38bdf8', penwidth='1.5')
-                dot_tsp.attr('edge', fontname='Helvetica', fontsize='10', color='#94a3b8')
-                
-                node_counter = [0]
-
-                def build_unrolled_tree(i, S, parent_id=None):
-                    state = (i, frozenset(S))
-                    cost_val, best_next_city = compute_dp(i, S)
+                    st.success(f"✨ **Hungarian Assignment Steps for {num_cities} Cities:**")
+                    for title, mat_state, *extra in steps:
+                        st.markdown(f"**{title}**")
+                        df_step = pd.DataFrame(mat_state, index=city_labels, columns=city_labels)
+                        df_step_fmt = df_step.map(lambda x: "∞" if np.isinf(x) else fmt_num(x))
+                        st.dataframe(df_step_fmt, use_container_width=True)
+                        if extra and len(extra) > 0:
+                            info = extra[0]
+                            st.caption(f"Min lines needed $N = {info['num_lines']}$ (Target $n = {num_cities}$). {'Assignment is optimal ($N = n$)!' if info['num_lines'] >= num_cities else 'Lines $\\neq$ Cities ($N < n$), applying matrix adjustment...'}")
                     
-                    s_id = f"n_{node_counter[0]}"
-                    node_counter[0] += 1
+                    total_cost = 0
+                    path_desc = []
+                    for r, c in enumerate(assignment):
+                        if c != -1:
+                            val = dist_mat[r, c]
+                            total_cost += val
+                            path_desc.append(f"{city_labels[r]} $\\rightarrow$ {city_labels[c]} (Cost: {int(val)})")
                     
-                    set_str = ", ".join(sorted([city_labels[j] for j in S])) if S else "Ø"
-                    if not S:
-                        label = f"g({city_labels[i]}, Ø)\n= c_{city_labels[i]}{city_labels[start_idx]} = {int(cost_val)}"
-                    else:
-                        calculations = []
+                    st.success(f"🏆 **Optimal Assignment Tour:** {' | '.join(path_desc)} | **Total Minimum Cost = {int(total_cost)}**")
+            
+            else:
+                # Bellman-Held-Karp DP for n < 6
+                if st.button("Compute Optimal TSP Tour & Bellman-Held-Karp State Tree"):
+                    dist_mat = edited_df.values.astype(float)
+                    start_idx = city_labels.index(start_end_city)
+                    n = num_cities
+                    other_cities = [i for i in range(n) if i != start_idx]
+                    
+                    memo_dp = {}
+                    def compute_dp(i, S):
+                        state = (i, frozenset(S))
+                        if state in memo_dp:
+                            return memo_dp[state]
+                        if not S:
+                            cost = dist_mat[i][start_idx]
+                            memo_dp[state] = (cost, start_idx)
+                            return memo_dp[state]
+                        
+                        min_cost = float('inf')
+                        best_next = -1
                         for j in S:
                             sub_cost, _ = compute_dp(j, S - {j})
-                            calculations.append(f"{int(dist_mat[i][j])} + {int(sub_cost)}")
-                        calc_joined = ", ".join(calculations)
-                        if len(calculations) > 1:
-                            label = f"g({city_labels[i]}, {{{set_str}}})\n= min({calc_joined})\n= {int(cost_val)}"
+                            total = dist_mat[i][j] + sub_cost
+                            if total < min_cost:
+                                min_cost = total
+                                best_next = j
+                        memo_dp[state] = (min_cost, best_next)
+                        return memo_dp[state]
+
+                    all_S = frozenset(other_cities)
+                    opt_cost, _ = compute_dp(start_idx, all_S)
+                    
+                    optimal_states_set = set()
+                    curr_i = start_idx
+                    curr_S = all_S
+                    while curr_S:
+                        _, nxt = memo_dp[(curr_i, curr_S)]
+                        optimal_states_set.add((curr_i, curr_S))
+                        curr_i = nxt
+                        curr_S = curr_S - {nxt}
+                    optimal_states_set.add((curr_i, frozenset()))
+
+                    dot_tsp = graphviz.Digraph(comment="TSP Unrolled DP State Tree")
+                    dot_tsp.attr(bgcolor="transparent", rankdir="TB")
+                    dot_tsp.attr('node', shape='box', style='filled', fontcolor='white', fontname='Helvetica', fillcolor='#1e293b', color='#38bdf8', penwidth='1.5')
+                    dot_tsp.attr('edge', fontname='Helvetica', fontsize='10', color='#94a3b8')
+                    
+                    node_counter = [0]
+
+                    def build_unrolled_tree(i, S, parent_id=None):
+                        state = (i, frozenset(S))
+                        cost_val, best_next_city = compute_dp(i, S)
+                        
+                        s_id = f"n_{node_counter[0]}"
+                        node_counter[0] += 1
+                        
+                        set_str = ", ".join(sorted([city_labels[j] for j in S])) if S else "Ø"
+                        if not S:
+                            label = f"g({city_labels[i]}, Ø)\n= c_{city_labels[i]}{city_labels[start_idx]} = {int(cost_val)}"
                         else:
-                            label = f"g({city_labels[i]}, {{{set_str}}})\n= {calc_joined}\n= {int(cost_val)}"
+                            calculations = []
+                            for j in S:
+                                sub_cost, _ = compute_dp(j, S - {j})
+                                calculations.append(f"{int(dist_mat[i][j])} + {int(sub_cost)}")
+                            calc_joined = ", ".join(calculations)
+                            if len(calculations) > 1:
+                                label = f"g({city_labels[i]}, {{{set_str}}})\n= min({calc_joined})\n= {int(cost_val)}"
+                            else:
+                                label = f"g({city_labels[i]}, {{{set_str}}})\n= {calc_joined}\n= {int(cost_val)}"
 
-                    is_opt_node = (state in optimal_states_set)
-                    node_fill = '#059669' if is_opt_node and state != (start_idx, all_S) else ('#2563eb' if state == (start_idx, all_S) else '#1e293b')
-                    node_border = '#ef4444' if is_opt_node else '#38bdf8'
-                    pen_w = '3.0' if is_opt_node else '1.5'
+                        is_opt_node = (state in optimal_states_set)
+                        node_fill = '#059669' if is_opt_node and state != (start_idx, all_S) else ('#2563eb' if state == (start_idx, all_S) else '#1e293b')
+                        node_border = '#ef4444' if is_opt_node else '#38bdf8'
+                        pen_w = '3.0' if is_opt_node else '1.5'
+                        
+                        dot_tsp.node(s_id, label, fillcolor=node_fill, color=node_border, penwidth=pen_w)
+                        
+                        if parent_id:
+                            parent_i, parent_S = parent_id['i'], parent_id['S']
+                            _, p_best_next = memo_dp[(parent_i, parent_S)]
+                            is_opt_edge = (state in optimal_states_set and parent_id['state'] in optimal_states_set and p_best_next == i)
+                            edge_color = '#ef4444' if is_opt_edge else '#38bdf8'
+                            edge_width = '3.0' if is_opt_edge else '1.0'
+                            edge_label = f"c_{city_labels[parent_i]}{city_labels[i]}={int(dist_mat[parent_i][i])}"
+                            dot_tsp.edge(parent_id['id'], s_id, label=edge_label, color=edge_color, penwidth=edge_width, fontcolor='#f8fafc' if is_opt_edge else '#94a3b8')
+
+                        for j in S:
+                            child_state_info = {'i': i, 'S': S, 'state': state, 'id': s_id}
+                            build_unrolled_tree(j, S - {j}, child_state_info)
+
+                    build_unrolled_tree(start_idx, all_S)
+
+                    st.markdown(f"### 🌳 Unrolled Bellman-Held-Karp State Tree (Start/End: {start_end_city})")
+                    st.graphviz_chart(dot_tsp)
                     
-                    dot_tsp.node(s_id, label, fillcolor=node_fill, color=node_border, penwidth=pen_w)
+                    tour_seq = [start_idx]
+                    c_idx = start_idx
+                    c_set = all_S
+                    while c_set:
+                        _, nxt = memo_dp[(c_idx, c_set)]
+                        tour_seq.append(nxt)
+                        c_idx = nxt
+                        c_set = c_set - {nxt}
+                    tour_seq.append(start_idx)
                     
-                    if parent_id:
-                        parent_i, parent_S = parent_id['i'], parent_id['S']
-                        _, p_best_next = memo_dp[(parent_i, parent_S)]
-                        is_opt_edge = (state in optimal_states_set and parent_id['state'] in optimal_states_set and p_best_next == i)
-                        edge_color = '#ef4444' if is_opt_edge else '#38bdf8'
-                        edge_width = '3.0' if is_opt_edge else '1.0'
-                        edge_label = f"c_{city_labels[parent_i]}{city_labels[i]}={int(dist_mat[parent_i][i])}"
-                        dot_tsp.edge(parent_id['id'], s_id, label=edge_label, color=edge_color, penwidth=edge_width, fontcolor='#f8fafc' if is_opt_edge else '#94a3b8')
-
-                    for j in S:
-                        child_state_info = {'i': i, 'S': S, 'state': state, 'id': s_id}
-                        build_unrolled_tree(j, S - {j}, child_state_info)
-
-                build_unrolled_tree(start_idx, all_S)
-
-                st.markdown(f"### 🌳 Unrolled Bellman-Held-Karp State Tree (Start/End: {start_end_city})")
-                st.graphviz_chart(dot_tsp)
-                
-                tour_seq = [start_idx]
-                c_idx = start_idx
-                c_set = all_S
-                while c_set:
-                    _, nxt = memo_dp[(c_idx, c_set)]
-                    tour_seq.append(nxt)
-                    c_idx = nxt
-                    c_set = c_set - {nxt}
-                tour_seq.append(start_idx)
-                
-                tour_labels = [city_labels[idx] for idx in tour_seq]
-                st.success(f"🏆 **Optimal TSP Tour:** {' $\\rightarrow$ '.join(tour_labels)} | **Minimum Total Cost = {int(opt_cost)} units**")
+                    tour_labels = [city_labels[idx] for idx in tour_seq]
+                    st.success(f"🏆 **Optimal TSP Tour:** {' $\\rightarrow$ '.join(tour_labels)} | **Minimum Total Cost = {int(opt_cost)} units**")
 
         else:
             st.markdown("#### 🔄 Stagewise Network Shortest Route Studio")
@@ -1482,25 +1618,3 @@ else:
                     st.success(f"🌟 **Optimal Shortest Path ({net_method}):** {path_str} | **Total Minimum Distance = {int(total_min_cost)}**")
                 else:
                     st.error("No valid complete path found connecting source to sink with current matrix weights.")
-
-    # ------------------------------------------
-    # 6. ADVANCED TSP STUDIO
-    # ------------------------------------------
-    else:
-        st.markdown("### 🗺️ Advanced Travelling Salesman Problem (TSP) Studio")
-        tsp_cities = st.slider("Number of Cities", min_value=3, max_value=8, value=4)
-        city_names = [chr(65 + i) for i in range(tsp_cities)]
-        
-        if st.button("Generate Optimal Tour Map"):
-            dot_tsp = graphviz.Digraph(comment="TSP Tour")
-            dot_tsp.attr(bgcolor="transparent", rankdir="LR")
-            dot_tsp.attr('node', shape='circle', style='filled', fillcolor='#10b981', fontcolor='white')
-            dot_tsp.attr('edge', color='#c084fc')
-            
-            for i in range(tsp_cities):
-                c1 = city_names[i]
-                c2 = city_names[(i + 1) % tsp_cities]
-                dot_tsp.edge(c1, c2, label=f"dist {np.random.randint(10, 50)}")
-                
-            st.graphviz_chart(dot_tsp)
-            st.success(f"🏆 Optimal TSP Tour Found: {' -> '.join(city_names)} -> {city_names[0]}")
