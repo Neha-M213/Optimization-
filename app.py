@@ -250,7 +250,7 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
     sol = np.zeros(num_vars)
     for pos, b_idx in enumerate(basis_indices):
         if b_idx < num_vars: sol[b_idx] = rhs[pos]
-    return status, sol, float(c @ sol), iterations, list(special_flags), is_degenerate, has_alternative, alt_solutions, basis_indices, var_names, cj_zj, list(degenerate_points)
+    return status, sol, float(c @ sol), iterations, list(special_flags), is_degenerate, has_alternative, alt_solutions, basis_indices, var_names, cj_zj, list(degenerate_points), tableau
 
 # ==========================================
 # HELPER: DUAL SIMPLEX ENGINE
@@ -364,9 +364,17 @@ def solve_gomory_cutting_plane_2d(obj_type, c, A_init, signs_init, b_init):
     max_iter = 6
     
     for it in range(max_iter):
-        status, sol, z_val, iterations, flags, is_deg, has_alt, alt_sols, basis_idxs, var_nams, cj_zj_vals, deg_pts = solve_simplex_big_m(
+        res = solve_simplex_big_m(
             obj_type, c, np.array(current_A), current_signs, np.array(current_b)
         )
+        status = res[0]
+        sol = res[1]
+        z_val = res[2]
+        iterations = res[3]
+        basis_idxs = res[8]
+        var_nams = res[9]
+        tableau = res[12]
+        rhs = iterations[-1][4]
         
         if status != "Optimal":
             return "Infeasible or Unbounded", history, None
@@ -374,7 +382,6 @@ def solve_gomory_cutting_plane_2d(obj_type, c, A_init, signs_init, b_init):
         opt_sol = sol[:2]
         is_integer = all(np.isclose(val, round(val), atol=1e-3) for val in opt_sol)
         
-        # Display ONLY the optimal simplex table as requested
         optimal_tableau_info = iterations[-1]
         
         history.append({
@@ -383,8 +390,8 @@ def solve_gomory_cutting_plane_2d(obj_type, c, A_init, signs_init, b_init):
             "z": z_val,
             "tableau_df": optimal_tableau_info[1],
             "tableau_note": optimal_tableau_info[2],
-            "basis_indices": optimal_tableau_info[3],
-            "rhs": optimal_tableau_info[4],
+            "basis_indices": basis_idxs,
+            "rhs": rhs,
             "var_names": var_nams,
             "constraints": (copy.deepcopy(current_A), list(current_signs), list(current_b)),
             "is_integer": is_integer
@@ -393,38 +400,56 @@ def solve_gomory_cutting_plane_2d(obj_type, c, A_init, signs_init, b_init):
         if is_integer:
             return "Integer Optimal Solution Found", history, opt_sol
             
-        # Select row with largest fractional part
         best_row = -1
         max_frac = -1.0
-        rhs = optimal_tableau_info[4]
         
         for pos, b_val in enumerate(rhs):
-            frac = b_val - np.floor(b_val)
-            if frac > 1e-3 and frac < 1 - 1e-3:
-                if frac > max_frac:
-                    max_frac = frac
+            frac_val = b_val - np.floor(b_val)
+            if frac_val > 1e-3 and frac_val < 1 - 1e-3:
+                if frac_val > max_frac:
+                    max_frac = frac_val
                     best_row = pos
                     
         if best_row == -1:
             break
             
-        row_series = optimal_tableau_info[1].iloc[best_row]
-        b_bar = float(row_series['b'])
-        f_i0 = b_bar - np.floor(b_bar)
+        row_tableau = tableau[best_row]
+        b_val = rhs[best_row]
+        f_i0 = b_val - np.floor(b_val)
         
-        a_x1 = float(row_series['x1']) if 'x1' in row_series else 0.0
-        a_x2 = float(row_series['x2']) if 'x2' in row_series else 0.0
+        exprs = {}
+        exprs["x1"] = [1.0, 0.0, 0.0]
+        exprs["x2"] = [0.0, 1.0, 0.0]
         
-        def frac(val):
-            return val - np.floor(val)
-            
-        f_1 = frac(a_x1)
-        f_2 = frac(a_x2)
+        slack_count = 1
+        for ci, sig in enumerate(current_signs):
+            if sig == "<=":
+                s_name = f"s{slack_count}"
+                exprs[s_name] = [-current_A[ci][0], -current_A[ci][1], current_b[ci]]
+                slack_count += 1
+            else:
+                slack_count += 1
+                
+        sum_c1 = 0.0
+        sum_c2 = 0.0
+        sum_const = 0.0
         
-        # Add Gomory Fractional Cut
-        current_A.append([-float(f_1), -float(f_2)])
+        for j, vname in enumerate(var_nams):
+            coeff = row_tableau[j]
+            f_coeff = coeff - np.floor(coeff)
+            if abs(f_coeff) > 1e-5 and vname in exprs:
+                c1, c2, c0 = exprs[vname]
+                sum_c1 += f_coeff * c1
+                sum_c2 += f_coeff * c2
+                sum_const += f_coeff * c0
+                
+        cut_a1 = -sum_c1
+        cut_a2 = -sum_c2
+        cut_b_val = sum_const - f_i0
+        
+        current_A.append([cut_a1, cut_a2])
         current_signs.append("<=")
-        current_b.append(-float(f_i0))
+        current_b.append(cut_b_val)
         
     return "Max Iterations Reached", history, None
 
@@ -801,7 +826,7 @@ else:
         run_simplex = st.button("🚀 Solve Simplex Model")
 
         if run_simplex:
-            status, sol, final_z, iterations, flags, is_deg, has_alt, alt_sols, basis_idxs, var_nams, cj_zj_vals, degenerate_points = solve_simplex_big_m(
+            status, sol, final_z, iterations, flags, is_deg, has_alt, alt_sols, basis_idxs, var_nams, cj_zj_vals, degenerate_points, tableau = solve_simplex_big_m(
                 obj_type, np.array(c_vals), np.array(A_rows), signs, np.array(b_vals)
             )
 
@@ -955,7 +980,6 @@ else:
 
             fig_cp = go.Figure()
 
-            # 1. Plot initial feasible region
             init_verts = get_2d_feasible_polygon(cp_A, cp_signs, cp_b, max_bound)
             if len(init_verts) >= 3:
                 px = [p[0] for p in init_verts] + [init_verts[0][0]]
@@ -967,7 +991,6 @@ else:
                     name="Initial Feasible Region"
                 ))
 
-            # 2. Plot integer lattice points inside bounding box
             lattice_x = []
             lattice_y = []
             for xi in range(int(max_bound) + 1):
@@ -991,7 +1014,6 @@ else:
                 name="Integer Lattice Points"
             ))
 
-            # 3. Plot original constraints
             colors_list = ['#f43f5e', '#f59e0b', '#10b981', '#a855f7', '#c084fc']
             for i in range(len(cp_b)):
                 a1, a2, b_i = cp_A[i][0], cp_A[i][1], cp_b[i]
@@ -1007,10 +1029,8 @@ else:
                             line=dict(color=c_col, width=2.5)
                         ))
 
-            # 4. Plot Gomory cuts as dashed lines across iterations
             for idx, item in enumerate(history):
                 constraints_at_it = item["constraints"][0]
-                signs_at_it = item["constraints"][1]
                 b_at_it = item["constraints"][2]
                 
                 if len(constraints_at_it) > len(cp_A):
@@ -1029,7 +1049,6 @@ else:
                                     line=dict(color="#ef4444", width=3, dash="dash")
                                 ))
 
-            # 5. Highlight LP Optimal point vs Integer Optimal point
             first_sol = history[0]["solution"]
             fig_cp.add_trace(go.Scatter(
                 x=[first_sol[0]], y=[first_sol[1]],
