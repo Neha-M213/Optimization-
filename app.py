@@ -709,6 +709,107 @@ def add_smooth_3d_constraint_planes(fig, A_rows, signs, b_vals, max_3d):
                     ))
 
 # ==========================================
+# HELPER: HUNGARIAN TSP ASSIGNMENT ENGINE
+# ==========================================
+def get_min_lines(mat):
+    n = len(mat)
+    zeros = (mat <= 1e-7)
+    row_mate = [-1] * n
+    col_mate = [-1] * n
+
+    def find_path(u, visited_cols):
+        for v in range(n):
+            if zeros[u, v] and not visited_cols[v]:
+                visited_cols[v] = True
+                if col_mate[v] == -1 or find_path(col_mate[v], visited_cols):
+                    col_mate[v] = u
+                    row_mate[u] = v
+                    return True
+        return False
+
+    for i in range(n):
+        visited_cols = [False] * n
+        find_path(i, visited_cols)
+
+    unmatched_rows = [i for i in range(n) if row_mate[i] == -1]
+    marked_rows = set(unmatched_rows)
+    marked_cols = set()
+
+    changed = True
+    while changed:
+        changed = False
+        for r in list(marked_rows):
+            for c in range(n):
+                if zeros[r, c] and c not in marked_cols:
+                    marked_cols.add(c)
+                    changed = True
+        for c in list(marked_cols):
+            r = col_mate[c]
+            if r != -1 and r not in marked_rows:
+                marked_rows.add(r)
+                changed = True
+
+    covered_rows = [r not in marked_rows for r in range(n)]
+    covered_cols = [c in marked_cols for c in range(n)]
+    num_lines = sum(covered_rows) + sum(covered_cols)
+
+    return {
+        'num_lines': num_lines,
+        'covered_rows': covered_rows,
+        'covered_cols': covered_cols,
+        'row_mate': row_mate,
+        'col_mate': col_mate
+    }
+
+def solve_tsp_assignment(cost_matrix, city_labels):
+    n = len(cost_matrix)
+    mat = cost_matrix.copy().astype(float)
+    mat[mat == 0] = np.inf
+    np.fill_diagonal(mat, np.inf)
+
+    steps = []
+    steps.append(("Initial Cost Matrix (Diagonal = ∞ for TSP)", mat.copy()))
+
+    row_mins = np.min(mat, axis=1)
+    row_reduced = mat - row_mins[:, np.newaxis]
+    steps.append(("Row Reduction (Subtract row minimums)", row_reduced.copy()))
+
+    col_mins = np.min(row_reduced, axis=0)
+    col_reduced = row_reduced - col_mins
+    steps.append(("Column Reduction (Subtract column minimums)", col_reduced.copy()))
+
+    curr_mat = col_reduced.copy()
+
+    for iteration in range(10):
+        lines_info = get_min_lines(curr_mat)
+        num_lines = lines_info['num_lines']
+        steps.append((f"Line Coverage Iteration {iteration+1} (Min Lines N = {num_lines}, n = {n})", curr_mat.copy(), lines_info))
+
+        if num_lines >= n:
+            break
+
+        min_val = float('inf')
+        for r in range(n):
+            if not lines_info['covered_rows'][r]:
+                for c in range(n):
+                    if not lines_info['covered_cols'][c]:
+                        if curr_mat[r, c] < min_val:
+                            min_val = curr_mat[r, c]
+
+        for r in range(n):
+            for c in range(n):
+                if not lines_info['covered_rows'][r] and not lines_info['covered_cols'][c]:
+                    curr_mat[r, c] -= min_val
+                elif lines_info['covered_rows'][r] and lines_info['covered_cols'][c]:
+                    curr_mat[r, c] += min_val
+
+        steps.append((f"Matrix Adjustment (Subtracted & Added min uncut element {fmt_frac(min_val)})", curr_mat.copy()))
+
+    final_info = get_min_lines(curr_mat)
+    assignment = final_info['row_mate']
+    return steps, assignment, curr_mat
+
+# ==========================================
 # VIEW 1: LANDING SCREEN (Balanced 3x2 Grid)
 # ==========================================
 if st.session_state.selected_problem is None:
@@ -854,11 +955,10 @@ else:
 
                 if is_deg:
                     for dp in degenerate_points:
-                        deg_lbl = f"Degenerate Vertex ({fmt_frac(dp[0])}, {fmt_frac(dp[1])})"
                         fig.add_trace(go.Scatter(
                             x=[float(dp[0])], y=[float(dp[1])],
                             mode="markers+text",
-                            text=[deg_lbl],
+                            text=[f"Degenerate Vertex ({fmt_frac(dp[0])}, {fmt_frac(dp[1])})"],
                             textposition="top center",
                             textfont=dict(color="#f59e0b", size=12),
                             marker=dict(size=14, color="#f59e0b", symbol="circle-open", line=dict(width=3, color="#f59e0b")),
@@ -971,28 +1071,23 @@ else:
             st.session_state.cp_state = res[12]
             st.session_state.cp_history = []
 
-            # Initialize variable expressions map for robust back-substitution
-            v_exprs = {
-                "x1": {"x1": Fraction(1, 1), "x2": Fraction(0, 1), "const": Fraction(0, 1)},
-                "x2": {"x1": Fraction(0, 1), "x2": Fraction(1, 1), "const": Fraction(0, 1)}
+            # Initialize exact variable dictionary in terms of original (x1, x2): (const, coeff_x1, coeff_x2)
+            var_expr = {
+                "x1": (Fraction(0, 1), Fraction(1, 1), Fraction(0, 1)),
+                "x2": (Fraction(0, 1), Fraction(0, 1), Fraction(1, 1))
             }
-            s_cnt = 1
+            s_idx = 1
             for i, s in enumerate(cp_signs):
+                a1, a2, bi = to_frac(cp_A[i][0]), to_frac(cp_A[i][1]), to_frac(cp_b[i])
                 if s == "<=":
-                    v_exprs[f"s{s_cnt}"] = {
-                        "x1": -to_frac(cp_A[i][0]),
-                        "x2": -to_frac(cp_A[i][1]),
-                        "const": to_frac(cp_b[i])
-                    }
-                    s_cnt += 1
+                    # s_k = b - a1*x1 - a2*x2
+                    var_expr[f"s{s_idx}"] = (bi, -a1, -a2)
+                    s_idx += 1
                 elif s == ">=":
-                    v_exprs[f"s{s_cnt}"] = {
-                        "x1": to_frac(cp_A[i][0]),
-                        "x2": to_frac(cp_A[i][1]),
-                        "const": -to_frac(cp_b[i])
-                    }
-                    s_cnt += 1
-            st.session_state.cp_var_exprs = v_exprs
+                    # s_k = a1*x1 + a2*x2 - b
+                    var_expr[f"s{s_idx}"] = (-bi, a1, a2)
+                    s_idx += 1
+            st.session_state.cp_var_expr = var_expr
             st.rerun()
 
         if st.session_state.get("cp_run_key", False):
@@ -1045,8 +1140,7 @@ else:
                 else:
                     st.divider()
                     st.markdown("### ✂️ Apply Next Gomory Cutting Plane")
-                    
-                    # Find all basic rows with fractional RHS
+
                     fractional_rows = []
                     for pos, b_idx in enumerate(curr_state["basis_indices"]):
                         rhs_val = curr_state["rhs"][pos]
@@ -1119,12 +1213,12 @@ else:
                             cut_rhs = -rhs_rem
                             eq_cut = f"\\text{{Required fractional cut: }} {' '.join(cut_lhs_terms)} + {cut_slack_name} = {fmt_frac(cut_rhs)}"
 
-                            # Robust expression tracking for plotting any cut (constraint slacks or previous cut slacks)
-                            v_exprs = st.session_state.cp_var_exprs
-                            cut_expr_x1 = Fraction(0, 1)
-                            cut_expr_x2 = Fraction(0, 1)
-                            cut_expr_const = rhs_rem
-
+                            # Exact recursive back-substitution for S_k = -rhs_rem + sum(rem_j * var_j)
+                            # Since var_j = c0_j + c1_j*x1 + c2_j*x2, S_k = S_c0 + S_c1*x1 + S_c2*x2 >= 0
+                            var_expr = st.session_state.cp_var_expr
+                            s_c0 = -rhs_rem
+                            s_c1 = Fraction(0, 1)
+                            s_c2 = Fraction(0, 1)
                             for j in range(total_cols):
                                 if j == basis_indices[chosen_pos]:
                                     continue
@@ -1132,24 +1226,19 @@ else:
                                 if rem == 0:
                                     continue
                                 vname = var_names[j]
-                                if vname in v_exprs:
-                                    ex = v_exprs[vname]
-                                    cut_expr_x1 -= rem * ex["x1"]
-                                    cut_expr_x2 -= rem * ex["x2"]
-                                    cut_expr_const -= rem * ex["const"]
-                                elif j < 2:
-                                    if j == 0: cut_expr_x1 -= rem
-                                    if j == 1: cut_expr_x2 -= rem
+                                if vname in var_expr:
+                                    v_c0, v_c1, v_c2 = var_expr[vname]
+                                    s_c0 += rem * v_c0
+                                    s_c1 += rem * v_c1
+                                    s_c2 += rem * v_c2
 
-                            orig_x_coeffs = [cut_expr_x1, cut_expr_x2]
-                            orig_rhs_const = cut_expr_const - rhs_rem
+                            # Save S_k expression so future cuts using S_k resolve cleanly!
+                            var_expr[cut_slack_plain] = (s_c0, s_c1, s_c2)
+                            st.session_state.cp_var_expr = var_expr
 
-                            # Store expression for this new cut slack variable
-                            v_exprs[cut_slack_plain] = {
-                                "x1": cut_expr_x1,
-                                "x2": cut_expr_x2,
-                                "const": cut_expr_const
-                            }
+                            # Constraint boundary in x1-x2 space: s_c1*x1 + s_c2*x2 >= -s_c0
+                            orig_x_coeffs = [s_c1, s_c2]
+                            orig_rhs_const = -s_c0
 
                             new_tableau = [row + [Fraction(0, 1)] for row in tableau]
                             new_cut_row = cut_row_coeffs + [Fraction(1, 1)]
@@ -1182,17 +1271,18 @@ else:
                                 st.session_state.cp_state = d_state
                             st.rerun()
 
-            # Geometrical Visualization (Plotting all accumulated cuts)
+            # Geometrical Visualization (Plotting ALL accumulated cuts with distinct colors)
             st.divider()
             st.markdown("### 📈 Cutting Plane Feasible Region & Cumulative Slicing Studio")
             st.caption("Visualizing initial constraints, integer lattice points (dots), continuous LP optimal point, integer optimal point, and all accumulated Gomory cuts slicing off non-integer corners.")
 
             max_rhs_cp = max([abs(val) for val in cp_b]) if cp_b else 10.0
             max_bound_cp = max(max_rhs_cp * 1.5, 6.0)
-            x_line_cp = np.linspace(0, max_bound_cp, 200)
+            x_line_cp = np.linspace(0, max_bound_cp, 300)
 
             fig_cp = go.Figure()
             colors_cp = ['#38bdf8', '#f472b6', '#34d399', '#fbbf24', '#a78bfa']
+            cut_colors = ['#f43f5e', '#f59e0b', '#c084fc', '#10b981', '#fb7185', '#eab308']
 
             initial_verts = get_2d_feasible_polygon(cp_A, cp_signs, cp_b, max_bound_cp)
             if len(initial_verts) >= 3:
@@ -1232,21 +1322,32 @@ else:
                 name="Integer Lattice Points"
             ))
 
-            # Plot ALL applied Gomory cuts from history
-            for stage in st.session_state.cp_history:
-                ca1 = float(stage["orig_x_coeffs"][0])
-                ca2 = float(stage["orig_x_coeffs"][1])
-                cb_r = float(stage["orig_rhs_const"])
+            # Plot ALL applied Gomory cuts from history with distinct colors
+            for idx_cut, stage in enumerate(st.session_state.cp_history):
+                ca1_f = stage["orig_x_coeffs"][0]
+                ca2_f = stage["orig_x_coeffs"][1]
+                cb_r_f = stage["orig_rhs_const"]
+                ca1, ca2, cb_r = float(ca1_f), float(ca2_f), float(cb_r_f)
                 c_num = stage["cut_num"]
+                c_col = cut_colors[idx_cut % len(cut_colors)]
+
+                # Normalize sign for cleaner legend label if negative
+                if ca1_f < 0 or (ca1_f == 0 and ca2_f < 0):
+                    disp_a1, disp_a2, disp_b, ineq_sym = -ca1_f, -ca2_f, -cb_r_f, "≤"
+                else:
+                    disp_a1, disp_a2, disp_b, ineq_sym = ca1_f, ca2_f, cb_r_f, "≥"
+
+                cut_label = f"Gomory Cut #{c_num} ({fmt_frac(disp_a1)}x₁ + {fmt_frac(disp_a2)}x₂ {ineq_sym} {fmt_frac(disp_b)})"
+
                 if abs(ca2) > 1e-6:
                     y_cut = (cb_r - ca1 * x_line_cp) / ca2
-                    mask_c = (y_cut >= 0) & (y_cut <= max_bound_cp)
+                    mask_c = (y_cut >= -0.05) & (y_cut <= max_bound_cp)
                     if np.any(mask_c):
                         fig_cp.add_trace(go.Scatter(
-                            x=x_line_cp[mask_c], y=y_cut[mask_c],
+                            x=x_line_cp[mask_c], y=np.maximum(0.0, y_cut[mask_c]),
                             mode="lines",
-                            line=dict(color="#f43f5e", width=3, dash="dash"),
-                            name=f"Gomory Cut #{c_num} ({fmt_frac(ca1)}x₁ + {fmt_frac(ca2)}x₂ ≥ {fmt_frac(cb_r)})"
+                            line=dict(color=c_col, width=3.2, dash="dash"),
+                            name=cut_label
                         ))
                 elif abs(ca1) > 1e-6:
                     x_cut = cb_r / ca1
@@ -1254,8 +1355,8 @@ else:
                         fig_cp.add_trace(go.Scatter(
                             x=[x_cut, x_cut], y=[0, max_bound_cp],
                             mode="lines",
-                            line=dict(color="#f43f5e", width=3, dash="dash"),
-                            name=f"Gomory Cut #{c_num} (x₁ ≥ {fmt_frac(x_cut)})"
+                            line=dict(color=c_col, width=3.2, dash="dash"),
+                            name=cut_label
                         ))
 
             if st.session_state.cp_iterations_raw:
