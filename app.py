@@ -260,15 +260,12 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
                 is_degenerate = True
                 deg_pt = get_point_from_basis(basis_indices, rhs, num_vars)
                 degenerate_points.add(deg_pt)
-                deg_str = f"({fmt_frac(deg_pt[0])}, {fmt_frac(deg_pt[1])})"
-                special_flags.add(f"⚠️ **Degeneracy Detected:** Basic variable **{var_names[basis_indices[i]]}** has $b_i = 0$ at row {i+1} (Vertex: {deg_str}).")
 
         if max(cj_zj) <= 0:
             non_basic_indices = [j for j in range(total_cols) if j not in basis_indices]
             for nb_idx in non_basic_indices:
                 if cj_zj[nb_idx] == 0:
                     has_alternative = True
-                    special_flags.add(f"✨ **Alternative Optima Detected:** Non-basic variable **{var_names[nb_idx]}** has $C_j - Z_j = 0$.")
                     col_vals = [tableau[i][nb_idx] for i in range(num_cons)]
                     if any(v > 0 for v in col_vals):
                         valid_r = [(rhs[i] / col_vals[i], i) for i in range(num_cons) if col_vals[i] > 0]
@@ -311,7 +308,6 @@ def solve_simplex_big_m(obj_type, c, A, signs, b):
 
         if all(v <= 0 for v in col_vals):
             status = "Unbounded"
-            special_flags.add(f"🚩 **Unboundedness:** Pivot column {var_names[entering_col]} has entries ≤ 0.")
             df = build_notebook_tableau(tableau, var_names, cost_row, basis_indices, rhs, zj, cj_zj, z_val, obj_type, ratios=None, include_ratio_col=True, include_ratio_row=False)
             iterations.append((it + 1, df, f"Unbounded at {var_names[entering_col]}", list(basis_indices), list(rhs)))
             break
@@ -476,168 +472,6 @@ def solve_simplex_dual(obj_type, c, A, signs, b):
         obj_type, tableau, var_names, cost_row, basis_indices, b_f, num_vars
     )
     return status, sol, final_z_val, iterations, flags
-
-# ==========================================
-# HELPER: EXACT GOMORY FRACTIONAL CUT ENGINE
-# ==========================================
-def solve_cutting_plane_notebook(obj_type, c, A, signs, b):
-    num_vars = len(c)
-    res = solve_simplex_big_m(obj_type, c, A, signs, b)
-    status, sol, z_val, iterations_raw = res[0], res[1], res[2], res[3]
-    state = res[12]
-
-    if status != "Optimal" or state is None:
-        return status, sol, z_val, iterations_raw, []
-
-    cut_stages = []
-    curr_state = state
-    curr_sol = list(sol)
-    curr_z = z_val
-    cut_num = 1
-
-    while cut_num <= 8:
-        if all(val.denominator == 1 for val in curr_sol):
-            break
-
-        tableau = curr_state["tableau"]
-        rhs = curr_state["rhs"]
-        basis_indices = curr_state["basis_indices"]
-        var_names = curr_state["var_names"]
-        cost_row = curr_state["cost_row"]
-        num_cons = len(basis_indices)
-        total_cols = len(var_names)
-
-        # Select source row with largest fractional part (preferring decision variables first)
-        best_row = -1
-        max_frac = Fraction(0, 1)
-        for pos, b_idx in enumerate(basis_indices):
-            _, rem = frac_floor_decomp(rhs[pos])
-            if rem > 0 and rem > max_frac:
-                max_frac = rem
-                best_row = pos
-
-        if best_row == -1:
-            break
-
-        b_var_name = var_names[basis_indices[best_row]]
-        row_coeffs = tableau[best_row]
-        rhs_val = rhs[best_row]
-
-        # Build exact notebook source-row equation & decomposed equation
-        lhs_terms = []
-        decomp_terms = []
-        cut_lhs_terms = []
-        cut_row_coeffs = []
-
-        for j in range(total_cols):
-            coeff = row_coeffs[j]
-            vname = var_names[j]
-            if coeff != 0:
-                if not lhs_terms:
-                    lhs_terms.append(f"{fmt_latex_frac(coeff)} {vname}" if coeff != 1 else vname)
-                else:
-                    if coeff == 1:
-                        lhs_terms.append(f"+ {vname}")
-                    elif coeff == -1:
-                        lhs_terms.append(f"- {vname}")
-                    else:
-                        lhs_terms.append(f"{fmt_latex_frac(coeff, signed=True)} {vname}")
-
-            if j == basis_indices[best_row]:
-                decomp_terms.append(vname)
-                cut_row_coeffs.append(Fraction(0, 1))
-            else:
-                fl, rem = frac_floor_decomp(coeff)
-                cut_row_coeffs.append(-rem)
-                if coeff != 0:
-                    if fl == 0:
-                        decomp_terms.append(f"{fmt_latex_frac(rem, signed=True)} {vname}")
-                    elif rem == 0:
-                        decomp_terms.append(f"{fmt_latex_frac(fl, signed=True)} {vname}")
-                    else:
-                        decomp_terms.append(f"+ \\left({fmt_latex_frac(fl)} {fmt_latex_frac(rem, signed=True)}\\right) {vname}")
-                if rem > 0:
-                    cut_lhs_terms.append(f"{fmt_latex_frac(-rem, signed=bool(cut_lhs_terms))} {vname}")
-
-        rhs_fl, rhs_rem = frac_floor_decomp(rhs_val)
-        eq_source = f"{b_var_name}\\text{{-row}} \\implies {' '.join(lhs_terms)} = {fmt_latex_frac(rhs_val)}"
-        eq_decomp = f"{' '.join(decomp_terms)} = {rhs_fl} + {fmt_latex_frac(rhs_rem)}"
-
-        cut_slack_name = f"S_{cut_num}"
-        cut_slack_plain = f"S{cut_num}"
-        cut_rhs = -rhs_rem
-        eq_cut = f"\\text{{Required fractional cut: }} {' '.join(cut_lhs_terms)} + {cut_slack_name} = {fmt_latex_frac(cut_rhs)}"
-
-        # Express cut in terms of original decision variables x1, x2 for 2D plotting
-        # Since S_k = -rhs_rem + sum(rem_j * x_j) >= 0, substitute slack variables s_m = b_m - sum(a_mj * x_j)
-        orig_x_coeffs = [Fraction(0, 1)] * num_vars
-        orig_rhs_const = rhs_rem
-        for j in range(total_cols):
-            if j == basis_indices[best_row]:
-                continue
-            _, rem = frac_floor_decomp(row_coeffs[j])
-            if rem == 0:
-                continue
-            if j < num_vars:
-                orig_x_coeffs[j] += rem
-            else:
-                # Find original constraint corresponding to slack variable var_names[j]
-                vname = var_names[j]
-                if vname.startswith("s") and vname[1:].isdigit():
-                    c_idx = int(vname[1:]) - 1
-                    if 0 <= c_idx < len(b):
-                        if signs[c_idx] == "<=":
-                            # s = b - a1*x1 - a2*x2
-                            orig_rhs_const -= rem * to_frac(b[c_idx])
-                            for k in range(num_vars):
-                                orig_x_coeffs[k] -= rem * to_frac(A[c_idx][k])
-                        elif signs[c_idx] == ">=":
-                            # s = a1*x1 + a2*x2 - b
-                            orig_rhs_const += rem * to_frac(b[c_idx])
-                            for k in range(num_vars):
-                                orig_x_coeffs[k] += rem * to_frac(A[c_idx][k])
-
-        # Augment tableau with new cut row & new slack variable
-        new_tableau = [row + [Fraction(0, 1)] for row in tableau]
-        new_cut_row = cut_row_coeffs + [Fraction(1, 1)]
-        new_tableau.append(new_cut_row)
-
-        new_var_names = var_names + [cut_slack_plain]
-        new_cost_row = cost_row + [Fraction(0, 1)]
-        new_basis_indices = basis_indices + [len(new_var_names) - 1]
-        new_rhs = rhs + [cut_rhs]
-
-        d_status, d_sol, d_z, d_iters, d_flags, d_state = run_dual_simplex_on_tableau(
-            obj_type, new_tableau, new_var_names, new_cost_row, new_basis_indices, new_rhs, num_vars
-        )
-
-        cut_stages.append({
-            "cut_num": cut_num,
-            "source_var": b_var_name,
-            "eq_source": eq_source,
-            "eq_decomp": eq_decomp,
-            "eq_cut": eq_cut,
-            "dual_status": d_status,
-            "dual_sol": d_sol,
-            "dual_z": d_z,
-            "dual_iters": d_iters,
-            "dual_flags": d_flags,
-            "orig_x_coeffs": orig_x_coeffs,
-            "orig_rhs_const": orig_rhs_const
-        })
-
-        if d_status != "Optimal" or d_state is None:
-            status = d_status
-            curr_sol = d_sol
-            curr_z = d_z
-            break
-
-        curr_state = d_state
-        curr_sol = d_sol
-        curr_z = d_z
-        cut_num += 1
-
-    return status, curr_sol, curr_z, iterations_raw, cut_stages
 
 # ==========================================
 # HELPER: DYNAMIC BRANCH & BOUND ENGINE (FRACTIONS)
@@ -1191,11 +1025,11 @@ else:
                 st.plotly_chart(fig_3d, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': True})
 
     # ------------------------------------------
-    # 2. CUTTING PLANE METHOD (Exact Notebook Format)
+    # 2. CUTTING PLANE METHOD (Interactive Studio)
     # ------------------------------------------
     elif problem == "Cutting Plane Method":
-        st.markdown("### ✂️ Cutting Plane Method (Gomory Fractional Cut Studio)")
-        st.markdown("Solve Integer Linear Programming (ILP) problems starting from the optimal continuous LP simplex tableau, generating Gomory fractional cuts, and solving further using the Dual Simplex Method.")
+        st.markdown("### ✂️ Cutting Plane Method (Interactive Gomory Fractional Cut Studio)")
+        st.markdown("Solve Integer Linear Programming (ILP) problems interactively by choosing your cut source row, applying Dual Simplex steps, and stacking multiple cuts until an all-integer optimal solution is reached.")
 
         cp_cfg1, cp_cfg2 = st.columns(2)
         with cp_cfg1: cp_obj_type = st.selectbox("Objective Goal", ["Maximize", "Minimize"], key="cp_obj")
@@ -1224,59 +1058,204 @@ else:
                 cp_b.append(st.number_input(f"cp_b_{i}", value=def_b, key=f"cp_b_{i}"))
             cp_A.append(r_a)
 
-        if st.button("🚀 Run Optimal LP & Gomory Fractional Cut Iterations"):
-            cp_status, final_sol, final_z, iterations_raw, cut_stages = solve_cutting_plane_notebook(
-                cp_obj_type, np.array(cp_c_vals), np.array(cp_A), cp_signs, np.array(cp_b)
-            )
+        if "cp_run_key" not in st.session_state:
+            st.session_state.cp_run_key = False
 
+        if st.button("🚀 Initialize / Reset Continuous LP"):
+            res = solve_simplex_big_m(cp_obj_type, np.array(cp_c_vals), np.array(cp_A), cp_signs, np.array(cp_b))
+            st.session_state.cp_run_key = True
+            st.session_state.cp_status = res[0]
+            st.session_state.cp_sol = res[1]
+            st.session_state.cp_z = res[2]
+            st.session_state.cp_iterations_raw = res[3]
+            st.session_state.cp_state = res[12]
+            st.session_state.cp_history = []
+            st.rerun()
+
+        if st.session_state.get("cp_run_key", False):
             st.divider()
             st.markdown("### 📋 1. Optimal Simplex Tableau of Continuous LP Relaxation")
-            lp_sol = [Fraction(0, 1), Fraction(0, 1)]
-            if iterations_raw:
-                opt_iter_num, opt_df, opt_note, opt_basis, opt_rhs = iterations_raw[-1]
+            if st.session_state.cp_iterations_raw:
+                opt_iter_num, opt_df, opt_note, opt_basis, opt_rhs = st.session_state.cp_iterations_raw[-1]
                 st.markdown(f"**Optimal Continuous LP Tableau** — {opt_note}")
                 st.dataframe(opt_df, use_container_width=True, hide_index=True)
 
+                lp_sol = [Fraction(0, 1), Fraction(0, 1)]
                 for pos, b_idx in enumerate(opt_basis):
                     if b_idx < 2:
                         lp_sol[b_idx] = opt_rhs[pos]
                 lp_z = sum(to_frac(cp_c_vals[j]) * lp_sol[j] for j in range(2))
                 st.info(f"**Optimal LP Solution:** **x₁ = {fmt_frac(lp_sol[0])}**, **x₂ = {fmt_frac(lp_sol[1])}** | **Z = {fmt_frac(lp_z)}**")
 
-            if not cut_stages:
-                if cp_status == "Optimal":
-                    st.success("✅ The continuous LP optimal solution is already all-integer!")
+            # Display all previous cut stages (history intact)
+            for stage in st.session_state.cp_history:
+                st.divider()
+                st.markdown(f"### ✂️ Gomory Fractional Cut #{stage['cut_num']} & Dual Simplex Solution")
+                st.latex(stage["eq_source"])
+                st.latex(stage["eq_decomp"])
+                st.latex(stage["eq_cut"])
+
+                for d_it_num, d_df, d_note in stage["dual_iters"]:
+                    st.markdown(f"**Dual Simplex Iteration {d_it_num} (Cut #{stage['cut_num']})** — {d_note}")
+                    st.dataframe(d_df, use_container_width=True, hide_index=True)
+
+                if stage["dual_flags"]:
+                    for flg in stage["dual_flags"]:
+                        st.warning(flg)
+
+                if stage["dual_status"] == "Optimal":
+                    d_sol = stage["dual_sol"]
+                    st.info(f"**Post-Cut #{stage['cut_num']} Basic Solution:** **x₁ = {fmt_frac(d_sol[0])}**, **x₂ = {fmt_frac(d_sol[1])}** | **Z = {fmt_frac(stage['dual_z'])}**")
+
+            # Check if current solution is all integer
+            curr_state = st.session_state.cp_state
+            if curr_state is not None:
+                curr_sol = [Fraction(0, 1), Fraction(0, 1)]
+                for pos, b_idx in enumerate(curr_state["basis_indices"]):
+                    if b_idx < 2:
+                        curr_sol[b_idx] = curr_state["rhs"][pos]
+
+                is_all_integer = all(val.denominator == 1 for val in curr_sol)
+
+                if is_all_integer:
+                    st.success(f"🏆 **All-Integer Optimal Solution Reached:** **x₁ = {fmt_frac(curr_sol[0])}**, **x₂ = {fmt_frac(curr_sol[1])}** | **Optimal Z* = {fmt_frac(curr_state['z_val'])}**")
                 else:
-                    st.error(f"LP Relaxation Status: {cp_status}")
-            else:
-                for stage in cut_stages:
                     st.divider()
-                    st.markdown(f"### ✂️ Gomory Fractional Cut #{stage['cut_num']} & Dual Simplex Solution")
-                    st.latex(stage["eq_source"])
-                    st.latex(stage["eq_decomp"])
-                    st.latex(stage["eq_cut"])
+                    st.markdown("### ✂️ Apply Next Gomory Cutting Plane")
+                    
+                    # Find all basic rows with fractional RHS
+                    fractional_rows = []
+                    for pos, b_idx in enumerate(curr_state["basis_indices"]):
+                        rhs_val = curr_state["rhs"][pos]
+                        fl, rem = frac_floor_decomp(rhs_val)
+                        if rem > 0:
+                            fractional_rows.append((pos, b_idx, rhs_val, rem))
 
-                    for d_it_num, d_df, d_note in stage["dual_iters"]:
-                        st.markdown(f"**Dual Simplex Iteration {d_it_num} (Cut #{stage['cut_num']})** — {d_note}")
-                        st.dataframe(d_df, use_container_width=True, hide_index=True)
+                    if fractional_rows:
+                        row_options = []
+                        row_map = {}
+                        for pos, b_idx, rhs_val, rem in fractional_rows:
+                            vname = curr_state["var_names"][b_idx]
+                            label = f"Cut from Row {vname} (RHS = {fmt_frac(rhs_val)})"
+                            row_options.append(label)
+                            row_map[label] = pos
 
-                    if stage["dual_flags"]:
-                        for flg in stage["dual_flags"]:
-                            st.warning(flg)
+                        selected_row_label = st.selectbox("Select Cutting Plane Source Row:", row_options, key=f"select_cut_row_{len(st.session_state.cp_history)}")
 
-                    if stage["dual_status"] == "Optimal":
-                        d_sol = stage["dual_sol"]
-                        st.info(f"**Post-Cut #{stage['cut_num']} Basic Solution:** **x₁ = {fmt_frac(d_sol[0])}**, **x₂ = {fmt_frac(d_sol[1])}** | **Z = {fmt_frac(stage['dual_z'])}**")
-                    else:
-                        st.error(f"Dual Simplex Status: {stage['dual_status']}")
+                        if st.button("✂️ Apply Selected Cut & Run Dual Simplex"):
+                            chosen_pos = row_map[selected_row_label]
+                            tableau = curr_state["tableau"]
+                            rhs = curr_state["rhs"]
+                            basis_indices = curr_state["basis_indices"]
+                            var_names = curr_state["var_names"]
+                            cost_row = curr_state["cost_row"]
+                            total_cols = len(var_names)
 
-                if cp_status == "Optimal" and all(v.denominator == 1 for v in final_sol):
-                    st.success(f"🏆 **All-Integer Optimal Solution Reached:** **x₁ = {fmt_frac(final_sol[0])}**, **x₂ = {fmt_frac(final_sol[1])}** | **Optimal Z* = {fmt_frac(final_z)}**")
+                            b_var_name = var_names[basis_indices[chosen_pos]]
+                            row_coeffs = tableau[chosen_pos]
+                            rhs_val = rhs[chosen_pos]
 
-            # Geometrical Visualization
+                            lhs_terms, decomp_terms, cut_lhs_terms, cut_row_coeffs = [], [], [], []
+                            for j in range(total_cols):
+                                coeff = row_coeffs[j]
+                                vname = var_names[j]
+                                if coeff != 0:
+                                    if not lhs_terms:
+                                        lhs_terms.append(f"{fmt_latex_frac(coeff)} {vname}" if coeff != 1 else vname)
+                                    else:
+                                        if coeff == 1:
+                                            lhs_terms.append(f"+ {vname}")
+                                        elif coeff == -1:
+                                            lhs_terms.append(f"- {vname}")
+                                        else:
+                                            lhs_terms.append(f"{fmt_latex_frac(coeff, signed=True)} {vname}")
+
+                                if j == basis_indices[chosen_pos]:
+                                    decomp_terms.append(vname)
+                                    cut_row_coeffs.append(Fraction(0, 1))
+                                else:
+                                    fl, rem = frac_floor_decomp(coeff)
+                                    cut_row_coeffs.append(-rem)
+                                    if coeff != 0:
+                                        if fl == 0:
+                                            decomp_terms.append(f"{fmt_latex_frac(rem, signed=True)} {vname}")
+                                        elif rem == 0:
+                                            decomp_terms.append(f"{fmt_latex_frac(fl, signed=True)} {vname}")
+                                        else:
+                                            decomp_terms.append(f"+ \\left({fmt_latex_frac(fl)} {fmt_latex_frac(rem, signed=True)}\\right) {vname}")
+                                    if rem > 0:
+                                        cut_lhs_terms.append(f"{fmt_latex_frac(-rem, signed=bool(cut_lhs_terms))} {vname}")
+
+                            rhs_fl, rhs_rem = frac_floor_decomp(rhs_val)
+                            eq_source = f"{b_var_name}\\text{{-row}} \\implies {' '.join(lhs_terms)} = {fmt_latex_frac(rhs_val)}"
+                            eq_decomp = f"{' '.join(decomp_terms)} = {rhs_fl} + {fmt_latex_frac(rhs_rem)}"
+
+                            cut_num = len(st.session_state.cp_history) + 1
+                            cut_slack_name = f"S_{cut_num}"
+                            cut_slack_plain = f"S{cut_num}"
+                            cut_rhs = -rhs_rem
+                            eq_cut = f"\\text{{Required fractional cut: }} {' '.join(cut_lhs_terms)} + {cut_slack_name} = {fmt_frac(cut_rhs)}"
+
+                            # Compute original space representation for plotting
+                            orig_x_coeffs = [Fraction(0, 1)] * 2
+                            orig_rhs_const = rhs_rem
+                            for j in range(total_cols):
+                                if j == basis_indices[chosen_pos]:
+                                    continue
+                                _, rem = frac_floor_decomp(row_coeffs[j])
+                                if rem == 0:
+                                    continue
+                                if j < 2:
+                                    orig_x_coeffs[j] += rem
+                                else:
+                                    vname = var_names[j]
+                                    if vname.startswith("s") and vname[1:].isdigit():
+                                        c_idx = int(vname[1:]) - 1
+                                        if 0 <= c_idx < len(cp_b):
+                                            if cp_signs[c_idx] == "<=":
+                                                orig_rhs_const -= rem * to_frac(cp_b[c_idx])
+                                                for k in range(2):
+                                                    orig_x_coeffs[k] -= rem * to_frac(cp_A[c_idx][k])
+                                            elif cp_signs[c_idx] == ">=":
+                                                orig_rhs_const += rem * to_frac(cp_b[c_idx])
+                                                for k in range(2):
+                                                    orig_x_coeffs[k] += rem * to_frac(cp_A[c_idx][k])
+
+                            new_tableau = [row + [Fraction(0, 1)] for row in tableau]
+                            new_cut_row = cut_row_coeffs + [Fraction(1, 1)]
+                            new_tableau.append(new_cut_row)
+
+                            new_var_names = var_names + [cut_slack_plain]
+                            new_cost_row = cost_row + [Fraction(0, 1)]
+                            new_basis_indices = basis_indices + [len(new_var_names) - 1]
+                            new_rhs = rhs + [cut_rhs]
+
+                            d_status, d_sol, d_z, d_iters, d_flags, d_state = run_dual_simplex_on_tableau(
+                                cp_obj_type, new_tableau, new_var_names, new_cost_row, new_basis_indices, new_rhs, 2
+                            )
+
+                            st.session_state.cp_history.append({
+                                "cut_num": cut_num,
+                                "source_var": b_var_name,
+                                "eq_source": eq_source,
+                                "eq_decomp": eq_decomp,
+                                "eq_cut": eq_cut,
+                                "dual_status": d_status,
+                                "dual_sol": d_sol,
+                                "dual_z": d_z,
+                                "dual_iters": d_iters,
+                                "dual_flags": d_flags,
+                                "orig_x_coeffs": orig_x_coeffs,
+                                "orig_rhs_const": orig_rhs_const
+                            })
+                            if d_state is not None:
+                                st.session_state.cp_state = d_state
+                            st.rerun()
+
+            # Geometrical Visualization (Plotting all accumulated cuts)
             st.divider()
-            st.markdown("### 📈 Cutting Plane Feasible Region & Lattice Slicing Studio")
-            st.caption("Visualizing initial constraints, integer lattice points (dots), continuous LP optimal point, integer optimal point, and dashed Gomory cuts slicing off non-integer corners.")
+            st.markdown("### 📈 Cutting Plane Feasible Region & Cumulative Slicing Studio")
+            st.caption("Visualizing initial constraints, integer lattice points (dots), continuous LP optimal point, integer optimal point, and all accumulated Gomory cuts slicing off non-integer corners.")
 
             max_rhs_cp = max([abs(val) for val in cp_b]) if cp_b else 10.0
             max_bound_cp = max(max_rhs_cp * 1.5, 6.0)
@@ -1323,8 +1302,8 @@ else:
                 name="Integer Lattice Points"
             ))
 
-            # Plot actual generated Gomory cuts in x1-x2 space
-            for stage in cut_stages:
+            # Plot ALL applied Gomory cuts from history
+            for stage in st.session_state.cp_history:
                 ca1 = float(stage["orig_x_coeffs"][0])
                 ca2 = float(stage["orig_x_coeffs"][1])
                 cb_r = float(stage["orig_rhs_const"])
@@ -1349,20 +1328,27 @@ else:
                             name=f"Gomory Cut #{c_num} (x₁ ≥ {fmt_frac(x_cut)})"
                         ))
 
-            fig_cp.add_trace(go.Scatter(
-                x=[float(lp_sol[0])], y=[float(lp_sol[1])],
-                mode="markers+text",
-                text=[f"LP Optimal ({fmt_frac(lp_sol[0])}, {fmt_frac(lp_sol[1])})"],
-                textposition="bottom right",
-                marker=dict(size=14, color="#38bdf8", symbol="circle", line=dict(width=2, color="white")),
-                name="Continuous LP Optimal"
-            ))
-
-            if cp_status == "Optimal" and all(v.denominator == 1 for v in final_sol):
+            if st.session_state.cp_iterations_raw:
+                lp_sol = [Fraction(0, 1), Fraction(0, 1)]
+                opt_basis = st.session_state.cp_iterations_raw[-1][3]
+                opt_rhs = st.session_state.cp_iterations_raw[-1][4]
+                for pos, b_idx in enumerate(opt_basis):
+                    if b_idx < 2:
+                        lp_sol[b_idx] = opt_rhs[pos]
                 fig_cp.add_trace(go.Scatter(
-                    x=[float(final_sol[0])], y=[float(final_sol[1])],
+                    x=[float(lp_sol[0])], y=[float(lp_sol[1])],
                     mode="markers+text",
-                    text=[f"Integer Optimal ({fmt_frac(final_sol[0])}, {fmt_frac(final_sol[1])})"],
+                    text=[f"LP Optimal ({fmt_frac(lp_sol[0])}, {fmt_frac(lp_sol[1])})"],
+                    textposition="bottom right",
+                    marker=dict(size=14, color="#38bdf8", symbol="circle", line=dict(width=2, color="white")),
+                    name="Continuous LP Optimal"
+                ))
+
+            if curr_state is not None and all(v.denominator == 1 for v in curr_sol):
+                fig_cp.add_trace(go.Scatter(
+                    x=[float(curr_sol[0])], y=[float(curr_sol[1])],
+                    mode="markers+text",
+                    text=[f"Integer Optimal ({fmt_frac(curr_sol[0])}, {fmt_frac(curr_sol[1])})"],
                     textposition="top left",
                     marker=dict(size=16, color="#10b981", symbol="star", line=dict(width=2, color="white")),
                     name="Integer Optimal Point"
