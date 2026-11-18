@@ -854,10 +854,11 @@ else:
 
                 if is_deg:
                     for dp in degenerate_points:
+                        deg_lbl = f"Degenerate Vertex ({fmt_frac(dp[0])}, {fmt_frac(dp[1])})"
                         fig.add_trace(go.Scatter(
                             x=[float(dp[0])], y=[float(dp[1])],
                             mode="markers+text",
-                            text=[f"Degenerate Vertex ({fmt_frac(dp[0})}, {fmt_frac(dp[1])})"],
+                            text=[deg_lbl],
                             textposition="top center",
                             textfont=dict(color="#f59e0b", size=12),
                             marker=dict(size=14, color="#f59e0b", symbol="circle-open", line=dict(width=3, color="#f59e0b")),
