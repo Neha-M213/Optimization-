@@ -1170,7 +1170,6 @@ else:
                 st.markdown(f"**{opt_note}**")
                 st.dataframe(opt_df, use_container_width=True, hide_index=True)
 
-            # Display all previously applied cut stages in sequence
             if st.session_state.cp_cut_stages:
                 for stage in st.session_state.cp_cut_stages:
                     st.divider()
@@ -1277,7 +1276,6 @@ else:
                                 st.session_state.cp_z = d_z
                             st.rerun()
 
-            # Geometrical Visualization with ALL Cumulative Cuts Visible
             st.divider()
             st.markdown("### 📈 Cutting Plane Feasible Region & Cumulative Cut Slicing")
             st.caption("Visualizing initial constraints, integer lattice points (dots), continuous LP optimal point, and **all applied Gomory cuts** (dashed lines).")
