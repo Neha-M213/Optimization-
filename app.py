@@ -810,22 +810,24 @@ def solve_tsp_assignment(cost_matrix, city_labels):
     return steps, assignment, curr_mat
 
 # ==========================================
-# VIEW 1: LANDING SCREEN (Balanced 3x2 Grid)
+# VIEW 1: LANDING SCREEN (Centered 3x2 Grid Layout)
 # ==========================================
 if st.session_state.selected_problem is None:
     st.markdown('<div class="hero-title">What are we doing today?</div>', unsafe_allow_html=True)
     st.markdown('<div class="hero-sub">Select an optimization technique below to enter your parameters and visualize the solution.</div>', unsafe_allow_html=True)
 
-    row1_c1, row1_c2, row1_c3 = st.columns(3, gap="large")
-    with row1_c1: st.button("📈 Simplex Method", on_click=select_problem, args=("Simplex Method",))
-    with row1_c2: st.button("✂️ Cutting Plane Method", on_click=select_problem, args=("Cutting Plane Method",))
-    with row1_c3: st.button("🔄 Dual Simplex Method", on_click=select_problem, args=("Dual Simplex Method",))
+    # Perfectly centered Row 1 (3 items with symmetric margins)
+    _, r1_c1, r1_c2, r1_c3, _ = st.columns([1, 3, 3, 3, 1], gap="large")
+    with r1_c1: st.button("📈 Simplex Method", on_click=select_problem, args=("Simplex Method",))
+    with r1_c2: st.button("✂️ Cutting Plane Method", on_click=select_problem, args=("Cutting Plane Method",))
+    with r1_c3: st.button("🔄 Dual Simplex Method", on_click=select_problem, args=("Dual Simplex Method",))
 
     st.write("")
 
-    row2_space1, row2_c1, row2_c2, row2_space2 = st.columns([0.5, 3, 3, 0.5], gap="large")
-    with row2_c1: st.button("🌳 Branch and Bound", on_click=select_problem, args=("Branch and Bound",))
-    with row2_c2: st.button("🌐 Network & TSP Solver", on_click=select_problem, args=("Network & TSP Solver",))
+    # Perfectly centered Row 2 (2 items with symmetric margins)
+    _, r2_c1, r2_c2, _ = st.columns([1, 3, 3, 1], gap="large")
+    with r2_c1: st.button("🌳 Branch and Bound", on_click=select_problem, args=("Branch and Bound",))
+    with r2_c2: st.button("🌐 Network & TSP Solver", on_click=select_problem, args=("Network & TSP Solver",))
 
 # ==========================================
 # VIEW 2: DEDICATED WORKSPACE
@@ -1071,7 +1073,6 @@ else:
             st.session_state.cp_state = res[12]
             st.session_state.cp_history = []
 
-            # Initialize exact variable dictionary in terms of original (x1, x2): (const, coeff_x1, coeff_x2)
             var_expr = {
                 "x1": (Fraction(0, 1), Fraction(1, 1), Fraction(0, 1)),
                 "x2": (Fraction(0, 1), Fraction(0, 1), Fraction(1, 1))
@@ -1080,11 +1081,9 @@ else:
             for i, s in enumerate(cp_signs):
                 a1, a2, bi = to_frac(cp_A[i][0]), to_frac(cp_A[i][1]), to_frac(cp_b[i])
                 if s == "<=":
-                    # s_k = b - a1*x1 - a2*x2
                     var_expr[f"s{s_idx}"] = (bi, -a1, -a2)
                     s_idx += 1
                 elif s == ">=":
-                    # s_k = a1*x1 + a2*x2 - b
                     var_expr[f"s{s_idx}"] = (-bi, a1, a2)
                     s_idx += 1
             st.session_state.cp_var_expr = var_expr
@@ -1105,7 +1104,6 @@ else:
                 lp_z = sum(to_frac(cp_c_vals[j]) * lp_sol[j] for j in range(2))
                 st.info(f"**Optimal LP Solution:** **x₁ = {fmt_frac(lp_sol[0])}**, **x₂ = {fmt_frac(lp_sol[1])}** | **Z = {fmt_frac(lp_z)}**")
 
-            # Display all previous cut stages (history intact)
             for stage in st.session_state.cp_history:
                 st.divider()
                 st.markdown(f"### ✂️ Gomory Fractional Cut #{stage['cut_num']} & Dual Simplex Solution")
@@ -1125,7 +1123,6 @@ else:
                     d_sol = stage["dual_sol"]
                     st.info(f"**Post-Cut #{stage['cut_num']} Basic Solution:** **x₁ = {fmt_frac(d_sol[0])}**, **x₂ = {fmt_frac(d_sol[1])}** | **Z = {fmt_frac(stage['dual_z'])}**")
 
-            # Check if current solution is all integer
             curr_state = st.session_state.cp_state
             if curr_state is not None:
                 curr_sol = [Fraction(0, 1), Fraction(0, 1)]
@@ -1213,8 +1210,6 @@ else:
                             cut_rhs = -rhs_rem
                             eq_cut = f"\\text{{Required fractional cut: }} {' '.join(cut_lhs_terms)} + {cut_slack_name} = {fmt_frac(cut_rhs)}"
 
-                            # Exact recursive back-substitution for S_k = -rhs_rem + sum(rem_j * var_j)
-                            # Since var_j = c0_j + c1_j*x1 + c2_j*x2, S_k = S_c0 + S_c1*x1 + S_c2*x2 >= 0
                             var_expr = st.session_state.cp_var_expr
                             s_c0 = -rhs_rem
                             s_c1 = Fraction(0, 1)
@@ -1232,11 +1227,9 @@ else:
                                     s_c1 += rem * v_c1
                                     s_c2 += rem * v_c2
 
-                            # Save S_k expression so future cuts using S_k resolve cleanly!
                             var_expr[cut_slack_plain] = (s_c0, s_c1, s_c2)
                             st.session_state.cp_var_expr = var_expr
 
-                            # Constraint boundary in x1-x2 space: s_c1*x1 + s_c2*x2 >= -s_c0
                             orig_x_coeffs = [s_c1, s_c2]
                             orig_rhs_const = -s_c0
 
@@ -1271,7 +1264,6 @@ else:
                                 st.session_state.cp_state = d_state
                             st.rerun()
 
-            # Geometrical Visualization (Plotting ALL accumulated cuts with distinct colors)
             st.divider()
             st.markdown("### 📈 Cutting Plane Feasible Region & Cumulative Slicing Studio")
             st.caption("Visualizing initial constraints, integer lattice points (dots), continuous LP optimal point, integer optimal point, and all accumulated Gomory cuts slicing off non-integer corners.")
@@ -1322,7 +1314,6 @@ else:
                 name="Integer Lattice Points"
             ))
 
-            # Plot ALL applied Gomory cuts from history with distinct colors
             for idx_cut, stage in enumerate(st.session_state.cp_history):
                 ca1_f = stage["orig_x_coeffs"][0]
                 ca2_f = stage["orig_x_coeffs"][1]
@@ -1331,7 +1322,6 @@ else:
                 c_num = stage["cut_num"]
                 c_col = cut_colors[idx_cut % len(cut_colors)]
 
-                # Normalize sign for cleaner legend label if negative
                 if ca1_f < 0 or (ca1_f == 0 and ca2_f < 0):
                     disp_a1, disp_a2, disp_b, ineq_sym = -ca1_f, -ca2_f, -cb_r_f, "≤"
                 else:
